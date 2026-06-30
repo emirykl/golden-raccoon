@@ -33,8 +33,8 @@ const scanSteps: AgentStep[] = [
   },
 ];
 
-export function TokenScanClient() {
-  const [query, setQuery] = useState("MEME");
+export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: string }) {
+  const [query, setQuery] = useState(initialQuery || "MEME");
   const [scan, setScan] = useState<TokenScanResult | null>(null);
   const [isScanning, setIsScanning] = useState(false);
 

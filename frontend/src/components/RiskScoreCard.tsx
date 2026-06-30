@@ -20,10 +20,11 @@ export function RiskScoreCard({ score }: { score: number }) {
   const level = boundedScore >= 71 ? "High" : boundedScore >= 41 ? "Medium" : "Low";
   const markerAngle = -90 + boundedScore * 1.8;
   const marker = polarToCartesian(100, 100, 74, markerAngle);
+  const markerStem = polarToCartesian(100, 100, 58, markerAngle);
   const markerColor = boundedScore >= 71 ? "#ff6b6b" : boundedScore >= 41 ? "#f2c86d" : "#60d394";
 
   return (
-    <section className="glass-panel rounded-[28px] p-6">
+    <section className="glass-panel flex h-full flex-col rounded-[28px] p-6">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm text-white/54">Portfolio risk</div>
@@ -34,25 +35,36 @@ export function RiskScoreCard({ score }: { score: number }) {
         </span>
       </div>
 
-      <div className="mt-4 flex justify-center">
-        <svg viewBox="0 0 200 116" className="h-36 w-full max-w-xs overflow-visible" role="img" aria-label={`Portfolio risk ${boundedScore} out of 100`}>
-          <path d={arcPath(-90, -18)} fill="none" stroke="#60d394" strokeWidth="12" strokeLinecap="round" />
-          <path d={arcPath(-12, 38)} fill="none" stroke="#f2c86d" strokeWidth="12" strokeLinecap="round" />
-          <path d={arcPath(44, 90)} fill="none" stroke="#ff6b6b" strokeWidth="12" strokeLinecap="round" />
-          <circle cx={marker.x} cy={marker.y} r="7" fill="#fff" stroke="#050505" strokeWidth="2" />
+      <div className="flex flex-1 items-center justify-center">
+        <svg viewBox="0 0 200 128" className="h-40 w-full max-w-xs overflow-visible" role="img" aria-label={`Portfolio risk ${boundedScore} out of 100`}>
+          <defs>
+            <linearGradient id="riskGaugeGradient" x1="24" x2="176" y1="100" y2="100" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="#60d394" />
+              <stop offset="50%" stopColor="#f2c86d" />
+              <stop offset="100%" stopColor="#ff6b6b" />
+            </linearGradient>
+          </defs>
+          <path d={arcPath(-90, 90)} fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="16" strokeLinecap="round" />
+          <path d={arcPath(-90, 90)} fill="none" stroke="url(#riskGaugeGradient)" strokeWidth="16" strokeLinecap="round" />
+          <line x1={markerStem.x} y1={markerStem.y} x2={marker.x} y2={marker.y} stroke="#050505" strokeWidth="4" strokeLinecap="round" />
+          <circle cx={marker.x} cy={marker.y} r="9" fill="#fff" stroke="#050505" strokeWidth="3" />
+          <circle cx={marker.x} cy={marker.y} r="4" fill={markerColor} />
           <text x="100" y="78" textAnchor="middle" className="fill-white text-4xl font-semibold">
             {boundedScore}
           </text>
-          <text x="100" y="104" textAnchor="middle" className="fill-white/45 text-sm">
+          <text x="100" y="106" textAnchor="middle" className="fill-white/45 text-sm">
             {level} risk
           </text>
+          <text x="26" y="124" textAnchor="middle" className="fill-white/32 text-xs">
+            Low
+          </text>
+          <text x="100" y="124" textAnchor="middle" className="fill-white/32 text-xs">
+            Medium
+          </text>
+          <text x="174" y="124" textAnchor="middle" className="fill-white/32 text-xs">
+            High
+          </text>
         </svg>
-      </div>
-
-      <div className="grid grid-cols-3 gap-2 text-center text-xs text-white/38">
-        <span>Low</span>
-        <span>Medium</span>
-        <span>High</span>
       </div>
     </section>
   );
