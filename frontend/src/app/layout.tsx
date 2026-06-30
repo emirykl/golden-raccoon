@@ -4,8 +4,13 @@ import "./globals.css";
 import { Web3Provider } from "@/providers/Web3Provider";
 
 export const metadata: Metadata = {
-  title: "Gold Raccoon | AI Crypto Guardian",
+  title: "Golden Raccoon | AI Crypto Guardian",
   description: "Multi-agent crypto portfolio intelligence and user-authorized execution for GOAT Network.",
+  icons: {
+    icon: "/brand/logo.png",
+    shortcut: "/brand/logo.png",
+    apple: "/brand/logo.png",
+  },
 };
 
 export default function RootLayout({

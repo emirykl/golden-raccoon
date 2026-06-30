@@ -19,15 +19,15 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="mx-auto flex h-20 w-full max-w-7xl items-center justify-between px-5 sm:px-8">
           <Link href="/" className="flex items-center gap-3">
             <Image
-              src="/brand/gold-raccoon-guardian.png"
-              alt="Gold Raccoon guardian emblem"
+              src="/brand/logo.png"
+              alt="Golden Raccoon guardian emblem"
               width={44}
               height={44}
               className="rounded-2xl border border-white/10"
               priority
             />
             <div>
-              <div className="text-sm font-semibold tracking-[0.18em] text-[#d9a441]">GOLD RACCOON</div>
+              <div className="text-sm font-semibold tracking-[0.18em] text-[#d9a441]">GOLDEN RACCOON</div>
               <div className="text-xs text-white/48">Multi-agent portfolio intelligence</div>
             </div>
           </Link>

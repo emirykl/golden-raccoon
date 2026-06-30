@@ -1,8 +1,15 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
 import { goatNetwork } from "./chains";
 
+const appUrl =
+  process.env.NEXT_PUBLIC_APP_URL ??
+  (process.env.NEXT_PUBLIC_VERCEL_URL ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}` : "http://localhost:3000");
+
 export const wagmiConfig = getDefaultConfig({
-  appName: "Gold Raccoon",
+  appName: "Golden Raccoon",
+  appDescription: "Multi-agent portfolio intelligence",
+  appUrl,
+  appIcon: `${appUrl}/brand/logo.png`,
   projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "gold-raccoon-demo",
   chains: [goatNetwork],
   ssr: true,

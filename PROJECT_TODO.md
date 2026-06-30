@@ -332,3 +332,68 @@
   - Revoke permissions
   - View explanation history
 - Real execution must require wallet authorization unless explicitly enabled by a future limited-permission contract flow.
+
+## Backend Real Data Migration Todo
+
+### 0 - Current State
+- [x] Mock portfolio exists.
+- [x] Mock token scan exists.
+- [x] Mock agent orchestration exists.
+- [x] Approval-only transaction preview exists.
+- [ ] Real wallet token balances.
+- [ ] Real token prices.
+- [ ] Real liquidity / pair data.
+- [ ] Real contract risk data.
+- [ ] Real social/news data.
+- [ ] Real transaction calldata preparation.
+- [ ] Persistent decision / scan / transaction history.
+
+### 1 - Data Adapter Layer
+- [ ] Create provider interfaces so mocks and real integrations use the same shape.
+- [ ] Add `PortfolioProvider` for wallet balances and holdings.
+- [ ] Add `PriceProvider` for USD prices and 24h changes.
+- [ ] Add `TokenScanProvider` for contract, liquidity, holder, website, and social signals.
+- [ ] Add `ExecutionProvider` for transaction preview / calldata.
+- [ ] Keep mock providers as fallback.
+
+### 2 - Real Wallet Portfolio
+- [ ] Read native balance from the selected network RPC.
+- [ ] Read ERC-20 balances from an indexer or token API.
+- [ ] Resolve token metadata: symbol, name, decimals, logo.
+- [ ] Resolve token USD prices.
+- [ ] Calculate value, allocation, and portfolio risk.
+- [ ] Replace `/api/portfolio` mock response behind a feature flag.
+
+### 3 - Real Token Scan
+- [ ] Require `chain + contractAddress` as primary scan input.
+- [ ] Fetch token metadata and pair/liquidity data.
+- [ ] Check contract flags and holder concentration.
+- [ ] Check social/news/project legitimacy signals.
+- [ ] Convert all raw signals into the existing `TokenSignal` scores.
+- [ ] Replace `/api/scan/token` mock response behind a feature flag.
+
+### 4 - Agent Orchestration
+- [ ] Define `AgentResult` schema with `agent`, `status`, `signals`, `summary`, `confidence`, and `sources`.
+- [ ] Convert Portfolio, News, Social, Onchain, and Execution modules to return `AgentResult`.
+- [ ] Make Decision Agent consume only structured `AgentResult` objects.
+- [ ] Keep deterministic scoring as the source of truth.
+- [ ] Use LLM only for explanation text after deterministic decisioning works.
+
+### 5 - Rules And Recommendations
+- [ ] Persist user strategy and risk rules.
+- [ ] Apply rules to every portfolio analysis and token scan.
+- [ ] Generate recommendation: hold, watch, reduce exposure, swap to stablecoin, or prepare execution.
+- [ ] Store every recommendation with source signals and explanation.
+
+### 6 - Execution
+- [ ] Keep MVP approval-only.
+- [ ] Prepare transaction preview from recommendation.
+- [ ] Generate real swap calldata only after user approval flow is clear.
+- [ ] Log decision hash on-chain if needed.
+- [ ] Do not enable autonomous execution until limited-permission contract/session-key flow is designed.
+
+### 7 - Monitoring
+- [ ] Add manual refresh first.
+- [ ] Add scheduled scan jobs second.
+- [ ] Add alert generation for rule breaches.
+- [ ] Add persistent history for scans, decisions, and transactions.
