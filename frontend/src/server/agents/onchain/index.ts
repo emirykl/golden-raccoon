@@ -329,6 +329,46 @@ function buildLiquidityFindings(pairs?: DexScreenerPair[]): AgentFinding[] {
   ];
 }
 
+function buildMarketAnomalyFindings(pairs?: DexScreenerPair[]): AgentFinding[] {
+  const bestPair = getBestPair(pairs);
+
+  if (!bestPair) {
+    return [
+      {
+        label: "Market anomaly",
+        severity: "medium",
+        detail: "DexScreener market ratios could not be calculated.",
+      },
+    ];
+  }
+
+  const liquidityUsd = bestPair.liquidity?.usd ?? 0;
+  const volume24h = bestPair.volume?.h24 ?? 0;
+  const fdv = bestPair.fdv ?? bestPair.marketCap ?? 0;
+  const pairAgeDays = bestPair.pairCreatedAt ? Math.floor((Date.now() - bestPair.pairCreatedAt) / 86_400_000) : null;
+  const volumeLiquidityRatio = liquidityUsd > 0 ? volume24h / liquidityUsd : 0;
+  const fdvLiquidityRatio = liquidityUsd > 0 ? fdv / liquidityUsd : 0;
+  const isVeryNewPair = pairAgeDays !== null && pairAgeDays < 3;
+
+  return [
+    {
+      label: "Volume/liquidity ratio",
+      severity: volumeLiquidityRatio >= 8 ? "high" : volumeLiquidityRatio >= 3 ? "medium" : "low",
+      detail: `24h volume is ${volumeLiquidityRatio.toFixed(2)}x liquidity. High ratios can indicate churn, wash trading, or unstable exits.`,
+    },
+    {
+      label: "FDV/liquidity ratio",
+      severity: fdvLiquidityRatio >= 100 ? "high" : fdvLiquidityRatio >= 35 ? "medium" : "low",
+      detail: `FDV is ${fdvLiquidityRatio.toFixed(2)}x liquidity. Thin liquidity against a large valuation makes exits fragile.`,
+    },
+    {
+      label: "New pair risk",
+      severity: isVeryNewPair && liquidityUsd < 100_000 ? "high" : isVeryNewPair ? "medium" : "low",
+      detail: `Pair age is ${pairAgeDays === null ? "unknown" : `${pairAgeDays} days`} with $${Math.round(liquidityUsd).toLocaleString("en-US")} liquidity.`,
+    },
+  ];
+}
+
 function buildCreatorFindings(activity?: CreatorActivity): AgentFinding[] {
   if (!activity) {
     return [
@@ -379,8 +419,36 @@ function scoreFindings(findings: AgentFinding[]) {
     high: 76,
     critical: 94,
   };
+  const getFindingWeight = (finding: AgentFinding) => {
+    const label = finding.label.toLowerCase();
 
-  return Math.round(findings.reduce((total, finding) => total + severityScore[finding.severity], 0) / findings.length);
+    if (label.includes("critical") || label.includes("honeypot") || label.includes("creator wallet selling")) {
+      return 1.55;
+    }
+
+    if (label.includes("fdv") || label.includes("volume/liquidity") || label.includes("liquidity")) {
+      return 1.25;
+    }
+
+    if (label.includes("tax") || label.includes("permission")) {
+      return 1.15;
+    }
+
+    return 1;
+  };
+  const weighted = findings.reduce(
+    (total, finding) => {
+      const weight = getFindingWeight(finding);
+
+      return {
+        score: total.score + severityScore[finding.severity] * weight,
+        weight: total.weight + weight,
+      };
+    },
+    { score: 0, weight: 0 },
+  );
+
+  return Math.round(weighted.score / weighted.weight);
 }
 
 export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentResult> {
@@ -433,7 +501,12 @@ export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentRe
   const security = securityResult.status === "fulfilled" ? securityResult.value : undefined;
   const pairs = pairsResult.status === "fulfilled" ? pairsResult.value : undefined;
   const creatorActivity = await fetchCreatorActivity(chainConfig, security, contractAddress, pairs).catch(() => undefined);
-  const findings = [...buildSecurityFindings(security), ...buildLiquidityFindings(pairs), ...buildCreatorFindings(creatorActivity)];
+  const findings = [
+    ...buildSecurityFindings(security),
+    ...buildLiquidityFindings(pairs),
+    ...buildMarketAnomalyFindings(pairs),
+    ...buildCreatorFindings(creatorActivity),
+  ];
   const score = scoreFindings(findings);
   const sources: AgentSource[] = [
     {

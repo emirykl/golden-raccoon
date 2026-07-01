@@ -24,7 +24,9 @@ function mapFindingToBreakdown(finding: AgentFinding): RiskBreakdownItem {
   const score = scoreFromSeverity(finding.severity);
   const key: RiskBreakdownItem["key"] = lowerLabel.includes("liquidity")
     ? "liquidity"
-    : lowerLabel.includes("volume") || lowerLabel.includes("volatility") || lowerLabel.includes("pair")
+    : lowerLabel.includes("fdv")
+      ? "liquidity"
+    : lowerLabel.includes("volume") || lowerLabel.includes("volatility") || lowerLabel.includes("pair") || lowerLabel.includes("anomaly")
       ? "volatility"
       : lowerLabel.includes("creator") || lowerLabel.includes("selling")
         ? "whales"
