@@ -40,6 +40,8 @@ type DashboardRunSummary = {
   riskyToken?: Pick<TokenHolding, "symbol" | "name" | "tokenAddress" | "chainId" | "chainName" | "riskScore" | "allocationPercent">;
   final?: AgentResult;
   error?: string;
+  recordId?: string;
+  saveStatus?: "idle" | "saving" | "saved" | "error";
 };
 
 const dashboardStepTemplates: Omit<DashboardRunStep, "status">[] = [
@@ -251,8 +253,8 @@ export function DashboardClient() {
       const decisionResult = await postAgentResult("/api/agents/decision", { results: decisionInputs });
       pushResult(decisionResult);
       setStep("decision", "complete", decisionResult.verdict);
-      setDashboardRunSummary({ riskyToken, final: decisionResult });
-      void fetch("/api/history/agent-runs", {
+      setDashboardRunSummary({ riskyToken, final: decisionResult, saveStatus: "saving" });
+      const saveResponse = await fetch("/api/history/agent-runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -270,6 +272,14 @@ export function DashboardClient() {
           results: [...decisionInputs, decisionResult],
         }),
       });
+
+      if (!saveResponse.ok) {
+        setDashboardRunSummary({ riskyToken, final: decisionResult, saveStatus: "error" });
+      } else {
+        const saved = (await saveResponse.json()) as { id?: string };
+
+        setDashboardRunSummary({ riskyToken, final: decisionResult, recordId: saved.id, saveStatus: "saved" });
+      }
     } catch (error) {
       setDashboardRunSummary({
         error: error instanceof Error ? error.message : "Agent run failed",
@@ -574,6 +584,18 @@ export function DashboardClient() {
                   <div className="text-sm text-white/42">Confidence</div>
                   <div className="mt-1 text-3xl font-semibold">{Math.round(dashboardRunSummary.final.confidence * 100)}%</div>
                 </div>
+              </div>
+            ) : null}
+
+            {dashboardRunSummary?.saveStatus ? (
+              <div className="mt-5 rounded-2xl border border-white/10 bg-white/6 p-4 text-sm text-white/52">
+                {dashboardRunSummary.saveStatus === "saving"
+                  ? "Saving audit record..."
+                  : dashboardRunSummary.saveStatus === "saved"
+                    ? `Audit record saved${dashboardRunSummary.recordId ? `: ${dashboardRunSummary.recordId}` : "."}`
+                    : dashboardRunSummary.saveStatus === "error"
+                      ? "Decision finished, but audit record could not be saved."
+                      : null}
               </div>
             ) : null}
 

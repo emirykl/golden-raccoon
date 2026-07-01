@@ -3,6 +3,7 @@ import { z } from "zod";
 import { withCacheHeaders } from "@/server/cache/strategy";
 import { assertApprovalOnly } from "@/server/security/policy";
 import { checkRateLimit } from "@/server/security/rateLimit";
+import { createApprovalRecord, createTransactionRecord } from "@/server/storage";
 
 const bodySchema = z.object({
   decisionId: z.string().optional(),
@@ -31,10 +32,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Execution policy failed" }, { status: 403 });
   }
 
+  const approval = createApprovalRecord({
+    walletAddress: parsed.data.walletAddress,
+    decisionId: parsed.data.decisionId,
+    txHash: parsed.data.txHash,
+  });
+  const transaction = createTransactionRecord({
+    hash: parsed.data.txHash,
+    type: "approval",
+    asset: "Wallet approval",
+    valueUsd: 0,
+    status: "confirmed",
+    network: "Connected wallet",
+    walletAddress: parsed.data.walletAddress,
+    userApproved: true,
+    decisionId: parsed.data.decisionId,
+  });
+
   return withCacheHeaders(NextResponse.json({
     ...parsed.data,
     status: "confirmed",
     autoExecuted: false,
+    approval,
+    transaction,
     confirmedAt: new Date().toISOString(),
   }), "execution");
 }

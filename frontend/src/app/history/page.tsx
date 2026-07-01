@@ -1,11 +1,14 @@
 import { AppShell } from "@/components/AppShell";
-import { listAgentRunRecords } from "@/server/storage";
+import { listAgentRunRecords, listApprovalRecords, listRecommendationRecords, listTransactionRecords } from "@/server/storage";
 import { getMockDecisionHistory } from "@/server/agent";
 
 export const dynamic = "force-dynamic";
 
 export default function HistoryPage() {
   const agentRuns = listAgentRunRecords();
+  const recommendations = listRecommendationRecords();
+  const approvals = listApprovalRecords();
+  const transactions = listTransactionRecords();
   const decisions = getMockDecisionHistory();
 
   return (
@@ -68,6 +71,65 @@ export default function HistoryPage() {
                 )}
               </tbody>
             </table>
+          </div>
+        </section>
+
+        <section className="grid gap-5 lg:grid-cols-3">
+          <div className="glass-panel rounded-[28px] p-5">
+            <div className="text-sm uppercase tracking-[0.16em] text-[#d9a441]">Recommendations</div>
+            <div className="mt-4 space-y-3">
+              {recommendations.length > 0 ? (
+                recommendations.slice(0, 5).map((recommendation) => (
+                  <div key={recommendation.id} className="rounded-2xl bg-white/6 p-4">
+                    <div className="text-sm font-semibold capitalize">{recommendation.action.replaceAll("_", " ")}</div>
+                    <div className="mt-1 text-xs leading-5 text-white/44">{recommendation.summary}</div>
+                    <div className="mt-3 flex justify-between text-xs text-white/38">
+                      <span>{recommendation.decisionScore}/100</span>
+                      <span>{Math.round(recommendation.confidence * 100)}%</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/42">No recommendation records yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="glass-panel rounded-[28px] p-5">
+            <div className="text-sm uppercase tracking-[0.16em] text-[#d9a441]">Approvals</div>
+            <div className="mt-4 space-y-3">
+              {approvals.length > 0 ? (
+                approvals.slice(0, 5).map((approval) => (
+                  <div key={approval.id} className="rounded-2xl bg-white/6 p-4">
+                    <div className="text-sm font-semibold">Wallet confirmed</div>
+                    <div className="mt-1 break-all text-xs leading-5 text-white/44">{approval.txHash}</div>
+                    <div className="mt-3 text-xs text-white/38">{new Date(approval.createdAt).toLocaleString("en-US")}</div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/42">No wallet approvals yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="glass-panel rounded-[28px] p-5">
+            <div className="text-sm uppercase tracking-[0.16em] text-[#d9a441]">Transactions</div>
+            <div className="mt-4 space-y-3">
+              {transactions.length > 0 ? (
+                transactions.slice(0, 5).map((transaction) => (
+                  <div key={transaction.hash} className="rounded-2xl bg-white/6 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold capitalize">{transaction.type.replaceAll("_", " ")}</div>
+                      <div className="text-xs text-white/38">{transaction.status}</div>
+                    </div>
+                    <div className="mt-1 break-all text-xs leading-5 text-white/44">{transaction.hash}</div>
+                    <div className="mt-3 text-xs text-white/38">{transaction.network}</div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/42">No stored transactions yet.</div>
+              )}
+            </div>
           </div>
         </section>
 

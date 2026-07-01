@@ -195,6 +195,9 @@ export type TransactionRecord = {
   status: "pending" | "confirmed" | "failed";
   createdAt: string;
   network: string;
+  walletAddress?: string;
+  userApproved?: boolean;
+  decisionId?: string;
 };
 
 export type AgentRunRecord = {
@@ -223,4 +226,33 @@ export type StorageHealth = {
   provider: StorageProvider;
   persistent: boolean;
   detail: string;
+};
+
+export type RecommendationRecord = {
+  id: string;
+  runId?: string;
+  walletAddress: string;
+  action: AgentRecommendedAction;
+  decisionScore: number;
+  confidence: number;
+  summary: string;
+  createdAt: string;
+};
+
+export type UserApprovalRecord = {
+  id: string;
+  walletAddress: string;
+  decisionId?: string;
+  txHash: string;
+  status: "confirmed";
+  autoExecuted: false;
+  createdAt: string;
+};
+
+export type StorageCounts = {
+  agentRuns: number;
+  recommendations: number;
+  transactions: number;
+  approvals: number;
+  userRules: number;
 };

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getDefaultRules } from "@/server/rules/defaultRules";
+import { withCacheHeaders } from "@/server/cache/strategy";
+import { assertApprovalOnly } from "@/server/security/policy";
+import { checkRateLimit } from "@/server/security/rateLimit";
+import { getUserRuleRecord, upsertUserRuleRecord } from "@/server/storage";
 
 const ruleSchema = z.object({
   walletAddress: z.string().min(1),
@@ -12,11 +15,23 @@ const ruleSchema = z.object({
 });
 
 export function GET(request: NextRequest) {
+  const rateLimited = checkRateLimit(request, { namespace: "rules", limit: 60, windowMs: 60_000 });
+
+  if (rateLimited) {
+    return rateLimited;
+  }
+
   const walletAddress = request.nextUrl.searchParams.get("walletAddress") ?? undefined;
-  return NextResponse.json(getDefaultRules(walletAddress));
+  return withCacheHeaders(NextResponse.json(getUserRuleRecord(walletAddress)), "rules");
 }
 
 export async function POST(request: Request) {
+  const rateLimited = checkRateLimit(request, { namespace: "rules:update", limit: 20, windowMs: 60_000 });
+
+  if (rateLimited) {
+    return rateLimited;
+  }
+
   const body = await request.json().catch(() => ({}));
   const parsed = ruleSchema.safeParse(body);
 
@@ -24,8 +39,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  return NextResponse.json({
+  try {
+    assertApprovalOnly({ autoExecute: parsed.data.autoExecute });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Execution policy failed" }, { status: 403 });
+  }
+
+  return withCacheHeaders(NextResponse.json(upsertUserRuleRecord({
     ...parsed.data,
+    autoExecute: false,
     createdAt: parsed.data.createdAt ?? new Date().toISOString(),
-  });
+  })), "rules");
 }
