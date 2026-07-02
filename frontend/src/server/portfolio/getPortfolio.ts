@@ -1,10 +1,9 @@
 import type { PortfolioSnapshot } from "@/server/types";
-import { getMockPortfolio } from "@/server/portfolio/mockPortfolio";
 import { getRealPortfolio } from "@/server/portfolio/realPortfolio";
 
 export type PortfolioSnapshotSource = {
-  status: "connected" | "mock";
-  provider: "real_portfolio" | "mock_portfolio";
+  status: "connected" | "unavailable";
+  provider: "real_portfolio" | "no_live_portfolio";
   detail: string;
 };
 
@@ -55,6 +54,20 @@ export function getPortfolioProviderHealth() {
   } satisfies PortfolioProviderHealth;
 }
 
+function getEmptyPortfolio(walletAddress?: string): PortfolioSnapshot {
+  return {
+    walletAddress: walletAddress || "unconnected",
+    nativeBalance: 0,
+    nativeSymbol: "NATIVE",
+    dayChangePercent: 0,
+    dayChangeUsd: 0,
+    totalValueUsd: 0,
+    riskScore: 50,
+    createdAt: new Date().toISOString(),
+    holdings: [],
+  };
+}
+
 export async function getPortfolioSnapshot(walletAddress?: string): Promise<PortfolioSnapshotResult> {
   if (walletAddress) {
     const realPortfolio = await getRealPortfolio(walletAddress);
@@ -72,13 +85,13 @@ export async function getPortfolioSnapshot(walletAddress?: string): Promise<Port
   }
 
   return {
-    portfolio: getMockPortfolio(walletAddress),
+    portfolio: getEmptyPortfolio(walletAddress),
     source: {
-      status: "mock",
-      provider: "mock_portfolio",
+      status: "unavailable",
+      provider: "no_live_portfolio",
       detail: walletAddress
-        ? "Real portfolio provider returned no usable holdings, so fallback data was used."
-        : "No wallet address supplied, so demo portfolio data was used.",
+        ? "Real portfolio provider returned no usable holdings. No mock portfolio was generated."
+        : "No wallet address supplied. Connect a wallet to run real portfolio analysis.",
     },
   };
 }

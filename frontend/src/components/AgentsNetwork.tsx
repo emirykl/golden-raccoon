@@ -23,7 +23,7 @@ const modules: AgentModule[] = [
     description: "Concentration, stable reserve and meme exposure.",
     inputLabel: "Wallet",
     placeholder: "0x wallet address",
-    defaultValue: "0xDemoWallet",
+    defaultValue: "",
     icon: Wallet,
   },
   {
@@ -75,7 +75,7 @@ const modules: AgentModule[] = [
 
 function buildRequestBody(agent: AgentKey, value: string, results: Partial<Record<AgentKey, AgentResult>>) {
   if (agent === "portfolio") {
-    return { walletAddress: value || "0xDemoWallet" };
+    return { walletAddress: value || undefined };
   }
 
   if (agent === "news") {

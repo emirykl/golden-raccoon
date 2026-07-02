@@ -13,7 +13,8 @@ export async function GET() {
     storageCounts: getStorageCounts(),
     security: getSecurityHealth(),
     cache: apiCacheStrategy,
-    fallbackOrder: ["GoldRush/Covalent", "Alchemy", "GOAT RPC", "Mock portfolio"],
+    mockFallbacksEnabled: false,
+    fallbackOrder: ["GoldRush/Covalent", "Alchemy", "GOAT RPC", "Unavailable empty portfolio"],
     checkedAt: new Date().toISOString(),
   });
 }

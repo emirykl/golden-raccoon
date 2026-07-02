@@ -26,7 +26,7 @@ function normalizeFindings(findings: AgentFinding[], sourceLabel: string) {
 export function buildAgentResult(input: BuildAgentResultInput): AgentResult {
   const score = clampScore(input.score);
   const hasHighRiskFinding = input.findings.some((finding) => finding.severity === "high" || finding.severity === "critical");
-  const fallbackSource = input.sources?.[0]?.label ?? "MVP local analysis";
+  const fallbackSource = input.sources?.[0]?.label ?? "Unavailable source";
 
   return {
     agent: input.agent,
@@ -37,9 +37,9 @@ export function buildAgentResult(input: BuildAgentResultInput): AgentResult {
     findings: normalizeFindings(input.findings, fallbackSource),
     sources: input.sources ?? [
       {
-        label: "MVP local analysis",
-        status: "mock",
-        detail: "Deterministic placeholder until the real provider is connected.",
+        label: "Unavailable source",
+        status: "unavailable",
+        detail: "No live source was supplied for this agent result.",
       },
     ],
     confidence: input.confidence ?? 0.62,

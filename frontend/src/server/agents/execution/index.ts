@@ -152,8 +152,8 @@ export function runExecutionAgent(input: ExecutionAgentInput): AgentResult {
     sources: [
       {
         label: "Execution policy",
-        status: "mock",
-        detail: "Local approval-only MVP policy. No transaction is sent by the server.",
+        status: "connected",
+        detail: "Local approval-only policy loaded from user rules. No transaction is sent by the server.",
       },
     ],
     confidence: 0.72,

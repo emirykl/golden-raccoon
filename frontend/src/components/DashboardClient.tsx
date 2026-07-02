@@ -107,9 +107,9 @@ export function DashboardClient() {
   const [dashboardRunSummary, setDashboardRunSummary] = useState<DashboardRunSummary | null>(null);
 
   useEffect(() => {
-    const walletAddress = address ?? "0xDemoWallet";
+    const query = address ? `?walletAddress=${address}` : "";
 
-    fetch(`/api/portfolio?walletAddress=${walletAddress}`)
+    fetch(`/api/portfolio${query}`)
       .then((response) => response.json())
       .then((data: PortfolioSnapshot) => setPortfolio(data));
   }, [address]);

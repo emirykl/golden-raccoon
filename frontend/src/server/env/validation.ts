@@ -39,10 +39,18 @@ export function getEnvHealth() {
   return {
     checks,
     liveSourceCount: configuredLiveSources.length,
-    status: configuredLiveSources.length > 0 ? "partial" : "fallback",
+    status: configuredLiveSources.length > 0 ? "partial" : "unavailable",
+    mockFallbacksEnabled: false,
+    realDataReadiness: {
+      portfolio: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? process.env.ALCHEMY_API_KEY),
+      onchain: Boolean(process.env.GOPLUS_API_KEY) || true,
+      news: true,
+      social: false,
+      execution: true,
+    },
     detail:
       configuredLiveSources.length > 0
         ? "At least one live data source is configured. Missing sources must stay transparent in UI."
-        : "No live API source is configured. App should show unavailable sources instead of fake confidence.",
+        : "No live API source is configured. App returns unavailable states instead of mock confidence.",
   };
 }

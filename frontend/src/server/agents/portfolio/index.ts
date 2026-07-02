@@ -25,6 +25,35 @@ function getProviderSources() {
 }
 
 function analyzePortfolioSnapshot(portfolio: PortfolioSnapshot, source: PortfolioSnapshotSource): AgentResult {
+  if (portfolio.holdings.length === 0) {
+    return buildAgentResult({
+      agent: "portfolio",
+      score: 58,
+      verdict: "Portfolio source unavailable",
+      summary: "Portfolio Agent could not read live wallet holdings. No mock holdings were generated.",
+      findings: [
+        {
+          label: "Live portfolio unavailable",
+          severity: "medium",
+          detail: source.detail,
+          sourceLabel: "Wallet portfolio API",
+          raw: "No holding rows returned from configured portfolio providers.",
+          interpretation: "Connect a supported wallet or configure a live portfolio provider before making allocation decisions.",
+        },
+      ],
+      sources: [
+        {
+          label: "Wallet portfolio API",
+          status: "unavailable",
+          detail: `${source.detail} Snapshot for ${portfolio.walletAddress}.`,
+        },
+        ...getProviderSources(),
+      ],
+      confidence: 0.18,
+      recommendedAction: "manual_review",
+    });
+  }
+
   const largestHolding = portfolio.holdings.reduce((largest, holding) =>
     holding.allocationPercent > largest.allocationPercent ? holding : largest
   );

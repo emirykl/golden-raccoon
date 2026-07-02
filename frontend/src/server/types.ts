@@ -195,6 +195,13 @@ export type TokenScanResult = {
   suggestedAction: SuggestedAction;
   riskBreakdown: RiskBreakdownItem[];
   sources: ScanSource[];
+  dataQuality?: {
+    mode: "live" | "partial" | "unavailable";
+    connectedSources: number;
+    unavailableSources: number;
+    mockSources: number;
+    detail: string;
+  };
   scannedAt: string;
 };
 

@@ -1,34 +1,37 @@
 import { Activity, ChartNoAxesCombined, RadioTower, Waves } from "lucide-react";
 import type { TokenScanResult } from "@/server/types";
 
-const signalItems = [
-  {
-    label: "Market",
-    value: "Volatility high",
-    detail: "MEME short-term moves are unstable.",
-    icon: ChartNoAxesCombined,
-  },
-  {
-    label: "X / social",
-    value: "Negative",
-    detail: "Scam-warning terms increased in mock scan.",
-    icon: RadioTower,
-  },
-  {
-    label: "On-chain",
-    value: "Whale sells",
-    detail: "Large wallets show elevated sell pressure.",
-    icon: Activity,
-  },
-  {
-    label: "Liquidity",
-    value: "Falling",
-    detail: "Exit depth is weaker than previous read.",
-    icon: Waves,
-  },
-];
+const fallbackItems = [
+  { key: "volatility", label: "Market", icon: ChartNoAxesCombined },
+  { key: "xSentiment", label: "Social", icon: RadioTower },
+  { key: "contract", label: "On-chain", icon: Activity },
+  { key: "liquidity", label: "Liquidity", icon: Waves },
+] as const;
+
+function severityLabel(score?: number) {
+  if (typeof score !== "number") return "Unavailable";
+  if (score >= 85) return "Critical";
+  if (score >= 70) return "High risk";
+  if (score >= 40) return "Watch";
+  return "Low risk";
+}
+
+function getSignalItems(scan: TokenScanResult) {
+  return fallbackItems.map((item) => {
+    const breakdown = scan.riskBreakdown.find((risk) => risk.key === item.key);
+
+    return {
+      label: item.label,
+      value: severityLabel(breakdown?.score),
+      detail: breakdown?.finding ?? "No live signal was available for this category.",
+      icon: item.icon,
+    };
+  });
+}
 
 export function SignalSummaryCard({ scan }: { scan: TokenScanResult }) {
+  const signalItems = getSignalItems(scan);
+
   return (
     <section className="glass-panel rounded-[28px] p-6">
       <div className="flex items-start justify-between gap-4">
@@ -36,7 +39,9 @@ export function SignalSummaryCard({ scan }: { scan: TokenScanResult }) {
           <h2 className="text-xl font-semibold">What is happening now?</h2>
           <p className="mt-1 text-sm text-white/48">{scan.symbol} signal summary from the active agent run.</p>
         </div>
-        <span className="rounded-full border border-white/10 bg-white/7 px-3 py-1 text-xs text-white/54">2 min ago</span>
+        <span className="rounded-full border border-white/10 bg-white/7 px-3 py-1 text-xs capitalize text-white/54">
+          {scan.dataQuality?.mode ?? "partial"}
+        </span>
       </div>
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         {signalItems.map((item) => {

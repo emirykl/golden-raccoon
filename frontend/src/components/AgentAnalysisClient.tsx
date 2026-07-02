@@ -37,7 +37,7 @@ export function AgentAnalysisClient() {
     const response = await fetch("/api/agent/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ walletAddress: address ?? "0xDemoWallet" }),
+      body: JSON.stringify({ walletAddress: address }),
     });
     const data = (await response.json()) as AgentAnalysisResult;
 

@@ -4,7 +4,6 @@ import { runAgentSafely } from "@/server/agents/shared";
 import { runNewsAgent } from "@/server/agents/news";
 import { runOnchainAgent } from "@/server/agents/onchain";
 import { runSocialAgent } from "@/server/agents/social";
-import { getMockTokenScan } from "@/server/scan/mockScan";
 import { normalizeTokenInput } from "@/server/scan/tokenInput";
 
 function riskLevel(score: number): RiskLevel {
@@ -96,11 +95,74 @@ function verdictFromScore(score: number): TokenScanResult["verdict"] {
   return "safe";
 }
 
+function getDataQuality(sources: TokenScanResult["sources"]): TokenScanResult["dataQuality"] {
+  const connectedSources = sources.filter((source) => source.status === "connected").length;
+  const unavailableSources = sources.filter((source) => source.status === "unavailable").length;
+  const mockSources = sources.filter((source) => source.status === "mock").length;
+  const mode = connectedSources === 0 ? "unavailable" : unavailableSources > 0 || mockSources > 0 ? "partial" : "live";
+
+  return {
+    mode,
+    connectedSources,
+    unavailableSources,
+    mockSources,
+    detail:
+      mode === "live"
+        ? "All scan signals came from connected live sources."
+        : mode === "partial"
+          ? "Some scan signals were unavailable. The verdict is conservative."
+          : "No live scan source could resolve this token. Manual review is required.",
+  };
+}
+
+function buildUnresolvedTokenScan(query: string, chain?: string): TokenScanResult {
+  const sources: TokenScanResult["sources"] = [
+    {
+      label: "Input normalization",
+      status: "unavailable",
+      detail: "Input could not be resolved as an EVM contract address or DexScreener pair/token URL.",
+    },
+  ];
+
+  return {
+    symbol: query.trim().slice(0, 16).toUpperCase() || "UNKNOWN",
+    tokenAddress: "",
+    chain: chain || "unknown",
+    overallRiskScore: 72,
+    opportunityScore: 0,
+    verdict: "high_risk",
+    summary: "Token scan could not resolve this input through live token sources. No mock risk score was generated.",
+    reasons: [
+      "Input was not a valid EVM contract address.",
+      "Input was not a supported DexScreener token or pair URL.",
+      "Manual review is required before any wallet action.",
+    ],
+    suggestedAction: {
+      type: "hold",
+      fromToken: "TOKEN",
+      toToken: "USDC",
+      percent: 0,
+    },
+    riskBreakdown: [
+      {
+        key: "contract",
+        label: "Input unresolved",
+        score: 72,
+        severity: "high",
+        finding: "No live contract, liquidity, news or social scan was run because the token input could not be resolved.",
+      },
+    ],
+    sources,
+    dataQuality: getDataQuality(sources),
+    scannedAt: new Date().toISOString(),
+  };
+}
+
 export async function runTokenScan(query: string, chain?: string): Promise<TokenScanResult> {
   const normalized = await normalizeTokenInput(query, chain);
 
   if (!normalized) {
-    return getMockTokenScan(query);
+    return buildUnresolvedTokenScan(query, chain);
   }
 
   const [onchainResult, newsResult, socialResult] = await Promise.all([
@@ -133,6 +195,34 @@ export async function runTokenScan(query: string, chain?: string): Promise<Token
   const combinedFindings = [...decisionResult.findings, ...onchainResult.findings, ...newsResult.findings, ...socialResult.findings];
   const riskBreakdown = combinedFindings.map(mapFindingToBreakdown);
 
+  const sources: TokenScanResult["sources"] = [
+    {
+      label: "Input normalization",
+      status: "connected",
+      detail: `Parsed as ${normalized.source}${normalized.pairAddress ? ` from pair ${normalized.pairAddress}` : ""}.`,
+    },
+    ...onchainResult.sources.map((source) => ({
+      label: source.label,
+      status: source.status,
+      detail: source.detail ?? "",
+    })),
+    ...newsResult.sources.map((source) => ({
+      label: source.label,
+      status: source.status,
+      detail: source.detail ?? "",
+    })),
+    ...socialResult.sources.map((source) => ({
+      label: source.label,
+      status: source.status,
+      detail: source.detail ?? "",
+    })),
+    ...decisionResult.sources.map((source) => ({
+      label: source.label,
+      status: source.status,
+      detail: source.detail ?? "",
+    })),
+  ];
+
   return {
     symbol: normalized.symbol ?? "TOKEN",
     tokenAddress: normalized.contractAddress,
@@ -155,33 +245,8 @@ export async function runTokenScan(query: string, chain?: string): Promise<Token
             finding: `${decisionResult.summary} ${onchainResult.summary} ${newsResult.summary} ${socialResult.summary}`,
           },
         ],
-    sources: [
-      {
-        label: "Input normalization",
-        status: "connected",
-        detail: `Parsed as ${normalized.source}${normalized.pairAddress ? ` from pair ${normalized.pairAddress}` : ""}.`,
-      },
-      ...onchainResult.sources.map((source) => ({
-        label: source.label,
-        status: source.status,
-        detail: source.detail ?? "",
-      })),
-      ...newsResult.sources.map((source) => ({
-        label: source.label,
-        status: source.status,
-        detail: source.detail ?? "",
-      })),
-      ...socialResult.sources.map((source) => ({
-        label: source.label,
-        status: source.status,
-        detail: source.detail ?? "",
-      })),
-      ...decisionResult.sources.map((source) => ({
-        label: source.label,
-        status: source.status,
-        detail: source.detail ?? "",
-      })),
-    ],
+    sources,
+    dataQuality: getDataQuality(sources),
     scannedAt: onchainResult.createdAt,
   };
 }
