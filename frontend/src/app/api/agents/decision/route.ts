@@ -7,8 +7,10 @@ import { checkRateLimit } from "@/server/security/rateLimit";
 
 const agentResultSchema = z.object({
   agent: z.enum(["portfolio", "news", "social", "onchain", "decision", "execution"]),
-  status: z.enum(["idle", "running", "complete", "warning", "error", "unavailable"]),
+  status: z.enum(["idle", "running", "complete", "partial", "warning", "error", "unavailable", "blocked"]),
+  riskScore: z.number().min(0).max(100).optional(),
   score: z.number().min(0).max(100),
+  riskLevel: z.enum(["low", "medium", "high", "critical"]).optional(),
   verdict: z.string(),
   summary: z.string(),
   findings: z.array(
@@ -16,6 +18,12 @@ const agentResultSchema = z.object({
       label: z.string(),
       severity: z.enum(["low", "medium", "high", "critical"]),
       detail: z.string(),
+      scoreImpact: z.number().optional(),
+      weight: z.number().optional(),
+      sourceLabel: z.string().optional(),
+      raw: z.string().optional(),
+      interpretation: z.string().optional(),
+      confidence: z.number().min(0).max(1).optional(),
     })
   ),
   sources: z.array(
@@ -24,8 +32,24 @@ const agentResultSchema = z.object({
       url: z.string().optional(),
       status: z.enum(["mock", "connected", "unavailable"]),
       detail: z.string().optional(),
+      checkedAt: z.string().optional(),
+      latencyMs: z.number().optional(),
+      error: z.string().optional(),
+      reliability: z.number().min(0).max(1).optional(),
     })
   ),
+  dataQuality: z
+    .object({
+      mode: z.enum(["live", "partial", "unavailable", "stale", "conflicting"]),
+      connectedSources: z.number(),
+      unavailableSources: z.number(),
+      mockSources: z.number(),
+      sourceCount: z.number(),
+      reliability: z.number(),
+      lastCheckedAt: z.string().optional(),
+      detail: z.string(),
+    })
+    .optional(),
   confidence: z.number().min(0).max(1),
   recommendedAction: z.enum([
     "hold",
@@ -37,6 +61,18 @@ const agentResultSchema = z.object({
     "prepare_transaction",
     "no_action",
   ]),
+  blockingReasons: z.array(z.string()).optional(),
+  missingData: z
+    .array(
+      z.object({
+        field: z.string(),
+        reason: z.string(),
+        impact: z.enum(["low", "medium", "high"]),
+        requiredFor: z.string().optional(),
+      }),
+    )
+    .optional(),
+  rawSignals: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string(),
 });
 

@@ -218,7 +218,7 @@ export async function runSocialAgent(input: SocialAgentInput): Promise<AgentResu
   return buildAgentResult({
     agent: "social",
     score,
-    verdict: score >= 70 ? "Social risk needs review" : score >= 40 ? "Social signal incomplete" : "No major social metadata risk",
+    verdict: score >= 75 ? "Critical social risk needs review" : score >= 50 ? "Social risk needs review" : score >= 25 ? "Social signal incomplete" : "No major social metadata risk",
     summary:
       metadata.length > 0
         ? `Social Agent checked ${metadata.length} reachable public metadata source${metadata.length === 1 ? "" : "s"}.`
@@ -226,6 +226,6 @@ export async function runSocialAgent(input: SocialAgentInput): Promise<AgentResu
     findings,
     sources,
     confidence: metadata.length > 0 ? 0.52 : 0.28,
-    recommendedAction: score >= 70 ? "manual_review" : score >= 40 ? "watch" : "hold",
+    recommendedAction: score >= 75 ? "manual_review" : score >= 50 ? "manual_review" : score >= 25 ? "watch" : "hold",
   });
 }

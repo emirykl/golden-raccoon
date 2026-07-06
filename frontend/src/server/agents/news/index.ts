@@ -322,7 +322,7 @@ export async function runNewsAgent(input: NewsAgentInput): Promise<AgentResult> 
   return buildAgentResult({
     agent: "news",
     score,
-    verdict: score >= 70 ? "Negative news risk detected" : score >= 40 ? "News review needed" : "No major news risk",
+    verdict: score >= 75 ? "Critical news risk detected" : score >= 50 ? "Negative news risk detected" : score >= 25 ? "News review needed" : "No major news risk",
     summary:
       relevantItems.length > 0
         ? `${subject} matched ${relevantItems.length} recent RSS item${relevantItems.length === 1 ? "" : "s"} across connected crypto news sources.`
@@ -330,6 +330,6 @@ export async function runNewsAgent(input: NewsAgentInput): Promise<AgentResult> 
     findings,
     sources: [...sources, ...matchedArticleSources],
     confidence: sources.some((source) => source.status === "connected") ? 0.58 : 0.24,
-    recommendedAction: score >= 70 ? "manual_review" : score >= 40 ? "watch" : "hold",
+    recommendedAction: score >= 75 ? "manual_review" : score >= 50 ? "manual_review" : score >= 25 ? "watch" : "hold",
   });
 }

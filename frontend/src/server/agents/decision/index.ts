@@ -1,5 +1,5 @@
 import type { AgentFinding, AgentRecommendedAction, AgentResult, RiskLevel } from "@/server/types";
-import { buildAgentResult, clampScore } from "@/server/agents/shared";
+import { buildAgentResult, clampScore, scoreToRiskLevel } from "@/server/agents/shared";
 
 type DecisionInput = {
   results?: AgentResult[];
@@ -97,15 +97,15 @@ function decideAction(score: number, critical: boolean, results: AgentResult[]):
     return "manual_review";
   }
 
-  if (critical || score >= 85) {
+  if (critical || score >= 75) {
     return "avoid";
   }
 
-  if (score >= 72) {
+  if (score >= 50) {
     return "manual_review";
   }
 
-  if (score >= 58) {
+  if (score >= 25) {
     return "watch";
   }
 
@@ -135,7 +135,7 @@ function buildDecisionFindings(results: AgentResult[], score: number, action: Ag
   return [
     {
       label: "Weighted agent score",
-      severity: score >= 85 ? "critical" : score >= 72 ? "high" : score >= 58 ? "medium" : "low",
+      severity: scoreToRiskLevel(score),
       detail: `Weighted score is ${score}/100. Recommended action: ${action.replaceAll("_", " ")}.`,
     },
     {

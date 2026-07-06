@@ -1,16 +1,13 @@
 import type { AgentFinding, AgentResult, RiskBreakdownItem, RiskLevel, TokenScanResult } from "@/server/types";
 import { runDecisionAgent } from "@/server/agents/decision";
-import { runAgentSafely } from "@/server/agents/shared";
+import { runAgentSafely, scoreToRiskLevel } from "@/server/agents/shared";
 import { runNewsAgent } from "@/server/agents/news";
 import { runOnchainAgent } from "@/server/agents/onchain";
 import { runSocialAgent } from "@/server/agents/social";
 import { normalizeTokenInput } from "@/server/scan/tokenInput";
 
 function riskLevel(score: number): RiskLevel {
-  if (score >= 85) return "critical";
-  if (score >= 70) return "high";
-  if (score >= 40) return "medium";
-  return "low";
+  return scoreToRiskLevel(score);
 }
 
 function scoreFromSeverity(severity: RiskLevel) {
@@ -89,9 +86,9 @@ function suggestedActionFromDecision(decisionResult: AgentResult): TokenScanResu
 }
 
 function verdictFromScore(score: number): TokenScanResult["verdict"] {
-  if (score >= 85) return "critical";
-  if (score >= 70) return "high_risk";
-  if (score >= 40) return "watch";
+  if (score >= 75) return "critical";
+  if (score >= 50) return "high_risk";
+  if (score >= 25) return "watch";
   return "safe";
 }
 
@@ -106,6 +103,15 @@ function getDataQuality(sources: TokenScanResult["sources"]): TokenScanResult["d
     connectedSources,
     unavailableSources,
     mockSources,
+    sourceCount: sources.length,
+    reliability:
+      sources.length > 0
+        ? sources.reduce((total, source) => {
+            if (source.status === "connected") return total + 0.75;
+            if (source.status === "mock") return total + 0.35;
+            return total + 0.1;
+          }, 0) / sources.length
+        : 0,
     detail:
       mode === "live"
         ? "All scan signals came from connected live sources."

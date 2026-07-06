@@ -629,11 +629,11 @@ export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentRe
   return buildAgentResult({
     agent: "onchain",
     score,
-    verdict: score >= 85 ? "Critical onchain risk" : score >= 70 ? "High onchain risk" : score >= 40 ? "Onchain review needed" : "No major onchain flags",
+    verdict: score >= 75 ? "Critical onchain risk" : score >= 50 ? "High onchain risk" : score >= 25 ? "Onchain review needed" : "No major onchain flags",
     summary: `Checked ${contractAddress} on ${chainConfig.dexScreenerChainId}. Security and liquidity signals produced ${findings.length} findings.`,
     findings,
     sources,
     confidence: security && pairs ? 0.74 : security || pairs ? 0.52 : 0.3,
-    recommendedAction: score >= 85 ? "avoid" : score >= 70 ? "manual_review" : score >= 40 ? "watch" : "hold",
+    recommendedAction: score >= 75 ? "avoid" : score >= 50 ? "manual_review" : score >= 25 ? "watch" : "hold",
   });
 }

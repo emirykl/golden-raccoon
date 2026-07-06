@@ -1,19 +1,26 @@
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 
-export type AgentStatus = "idle" | "running" | "complete" | "warning" | "error" | "unavailable";
+export type AgentStatus = "idle" | "running" | "complete" | "partial" | "warning" | "error" | "unavailable" | "blocked";
 
 export type AgentSource = {
   label: string;
   url?: string;
   status: "mock" | "connected" | "unavailable";
   detail?: string;
+  checkedAt?: string;
+  latencyMs?: number;
+  error?: string;
+  reliability?: number;
 };
 
 export type SourceDataQuality = {
-  mode: "live" | "partial" | "unavailable";
+  mode: "live" | "partial" | "unavailable" | "stale" | "conflicting";
   connectedSources: number;
   unavailableSources: number;
   mockSources: number;
+  sourceCount: number;
+  reliability: number;
+  lastCheckedAt?: string;
   detail: string;
 };
 
@@ -21,9 +28,12 @@ export type AgentFinding = {
   label: string;
   severity: RiskLevel;
   detail: string;
+  scoreImpact?: number;
+  weight?: number;
   sourceLabel?: string;
   raw?: string;
   interpretation?: string;
+  confidence?: number;
 };
 
 export type AgentRecommendedAction =
@@ -39,15 +49,48 @@ export type AgentRecommendedAction =
 export type AgentResult = {
   agent: "portfolio" | "news" | "social" | "onchain" | "decision" | "execution";
   status: AgentStatus;
+  riskScore: number;
   score: number;
+  riskLevel: RiskLevel;
   verdict: string;
   summary: string;
   findings: AgentFinding[];
   sources: AgentSource[];
-  dataQuality?: SourceDataQuality;
+  dataQuality: SourceDataQuality;
   confidence: number;
   recommendedAction: AgentRecommendedAction;
+  blockingReasons: string[];
+  missingData: AgentMissingData[];
+  rawSignals?: Record<string, unknown>;
   createdAt: string;
+};
+
+export type AgentMissingData = {
+  field: string;
+  reason: string;
+  impact: "low" | "medium" | "high";
+  requiredFor?: string;
+};
+
+export type AgentInputIdentity = {
+  walletAddress?: string;
+  chain?: string;
+  contractAddress?: string;
+  symbol?: string;
+  tokenName?: string;
+  websiteUrl?: string;
+  twitterUrl?: string;
+  telegramUrl?: string;
+  coingeckoId?: string;
+  dexScreenerPairUrl?: string;
+};
+
+export type ResolvedTokenIdentity = AgentInputIdentity & {
+  identityKey: string;
+  confidence: number;
+  confidenceLabel: "low" | "medium" | "high";
+  matchReasons: string[];
+  warnings: string[];
 };
 
 export type TokenSignal = {
