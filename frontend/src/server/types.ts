@@ -176,18 +176,50 @@ export type TransactionPreview = {
   requiresApproval: boolean;
   network: string;
   slippageBps?: number;
+  priceImpactBps?: number;
+  gasEstimateUsd?: number;
   approvalSteps?: string[];
   blockedReason?: string;
   policy?: {
     maxTradePercent: number;
     maxRiskScore: number;
     maxMemeExposurePercent: number;
+    maxDailyTransactionValueUsd?: number;
+    maxSlippageBps?: number;
+    allowedChains?: string[];
+    blockedTokens?: string[];
+    allowedActions?: AgentRecommendedAction[];
     autoExecute: false;
+  };
+  policyStatus?: {
+    allowed: boolean;
+    violations: string[];
+  };
+  quote?: {
+    provider: "planned_dex_aggregator";
+    route: string[];
+    expectedOutputToken: string;
+    expectedOutputAmount?: number;
+    estimatedValueUsd: number;
+    priceImpactBps: number;
+    slippageBps: number;
+    gasEstimateUsd: number;
+    status: "planned" | "unavailable";
+    detail: string;
+  };
+  simulation?: {
+    provider: "planned_tenderly" | "not_required";
+    status: "not_required" | "pending" | "passed" | "failed" | "unavailable";
+    checks: string[];
+    revertReason?: string;
+    detail: string;
   };
   audit?: {
     approvalRequired: boolean;
     serverCanSign: false;
     userRuleWallet?: string;
+    userApproved?: boolean;
+    decisionId?: string;
   };
 };
 
@@ -196,6 +228,11 @@ export type UserRule = {
   maxRiskScore: number;
   maxTradePercent: number;
   maxMemeExposurePercent: number;
+  maxDailyTransactionValueUsd?: number;
+  maxSlippageBps?: number;
+  allowedChains?: string[];
+  blockedTokens?: string[];
+  allowedActions?: AgentRecommendedAction[];
   autoExecute: boolean;
   createdAt: string;
 };
@@ -254,6 +291,7 @@ export type TokenScanResult = {
 export type TransactionRecord = {
   hash: string;
   type: "swap" | "approval" | "agent_log" | "transfer";
+  decisionAction?: AgentRecommendedAction;
   asset: string;
   valueUsd: number;
   status: "pending" | "confirmed" | "failed";
@@ -262,11 +300,15 @@ export type TransactionRecord = {
   walletAddress?: string;
   userApproved?: boolean;
   decisionId?: string;
+  simulationStatus?: NonNullable<TransactionPreview["simulation"]>["status"];
+  policyStatus?: TransactionPreview["policyStatus"];
 };
 
 export type AgentRunRecord = {
   id: string;
   walletAddress: string;
+  mode?: "portfolio_review" | "token_scan" | "pre_buy_check" | "holding_review" | "execution_prepare";
+  inputSnapshot?: Record<string, unknown>;
   targetToken?: {
     symbol?: string;
     name?: string;
@@ -281,6 +323,13 @@ export type AgentRunRecord = {
   confidence: number;
   summary: string;
   results: AgentResult[];
+  sourceStatuses?: Array<{
+    agent: AgentResult["agent"];
+    connected: number;
+    unavailable: number;
+    mock: number;
+  }>;
+  userAction?: "pending" | "approved" | "rejected" | "adjusted" | "executed";
   createdAt: string;
 };
 
@@ -308,6 +357,10 @@ export type UserApprovalRecord = {
   walletAddress: string;
   decisionId?: string;
   txHash: string;
+  network?: string;
+  action?: AgentRecommendedAction;
+  asset?: string;
+  valueUsd?: number;
   status: "confirmed";
   autoExecuted: false;
   createdAt: string;

@@ -12,8 +12,11 @@ import { getDefaultRules } from "@/server/rules/defaultRules";
 
 type CreateAgentRunInput = {
   walletAddress: string;
+  mode?: AgentRunRecord["mode"];
+  inputSnapshot?: Record<string, unknown>;
   targetToken?: AgentRunRecord["targetToken"];
   results: AgentResult[];
+  userAction?: AgentRunRecord["userAction"];
 };
 
 const memoryStore = globalThis as typeof globalThis & {
@@ -96,9 +99,17 @@ export function createAgentRunRecord(input: CreateAgentRunInput): AgentRunRecord
   const decision = [...input.results].reverse().find((result) => result.agent === "decision");
   const failed = input.results.some((result) => result.status === "error" || result.status === "unavailable");
   const completed = input.results.some((result) => result.agent === "decision");
+  const sourceStatuses = input.results.map((result) => ({
+    agent: result.agent,
+    connected: result.sources.filter((source) => source.status === "connected").length,
+    unavailable: result.sources.filter((source) => source.status === "unavailable").length,
+    mock: result.sources.filter((source) => source.status === "mock").length,
+  }));
   const record: AgentRunRecord = {
     id: createId(),
     walletAddress: input.walletAddress,
+    mode: input.mode,
+    inputSnapshot: input.inputSnapshot,
     targetToken: input.targetToken,
     status: completed ? (failed ? "partial" : "completed") : "failed",
     recommendation: decision?.recommendedAction ?? "manual_review",
@@ -106,6 +117,8 @@ export function createAgentRunRecord(input: CreateAgentRunInput): AgentRunRecord
     confidence: decision?.confidence ?? 0.28,
     summary: decision?.summary ?? "Agent run ended before a final decision was produced.",
     results: input.results,
+    sourceStatuses,
+    userAction: input.userAction ?? "pending",
     createdAt: new Date().toISOString(),
   };
 
@@ -189,12 +202,20 @@ export function createApprovalRecord(input: Omit<UserApprovalRecord, "id" | "cre
 }
 
 export function getUserRuleRecord(walletAddress = "0xDemoWallet") {
-  return getUserRules().find((rule) => rule.walletAddress.toLowerCase() === walletAddress.toLowerCase()) ?? getDefaultRules(walletAddress);
+  const existing = getUserRules().find((rule) => rule.walletAddress.toLowerCase() === walletAddress.toLowerCase());
+
+  return {
+    ...getDefaultRules(walletAddress),
+    ...existing,
+    autoExecute: false,
+  };
 }
 
 export function upsertUserRuleRecord(input: UserRule) {
   const createdAt = input.createdAt ?? new Date().toISOString();
+  const defaults = getDefaultRules(input.walletAddress);
   const record: UserRule = {
+    ...defaults,
     ...input,
     autoExecute: false,
     createdAt,

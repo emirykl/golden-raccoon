@@ -10,6 +10,13 @@ const ruleSchema = z.object({
   maxRiskScore: z.number().min(0).max(100),
   maxTradePercent: z.number().min(0).max(100),
   maxMemeExposurePercent: z.number().min(0).max(100),
+  maxDailyTransactionValueUsd: z.number().min(0).optional(),
+  maxSlippageBps: z.number().min(0).max(10_000).optional(),
+  allowedChains: z.array(z.string().min(1)).optional(),
+  blockedTokens: z.array(z.string().min(1)).optional(),
+  allowedActions: z
+    .array(z.enum(["hold", "watch", "reduce_exposure", "swap_to_stable", "avoid", "manual_review", "prepare_transaction", "no_action"]))
+    .optional(),
   autoExecute: z.boolean(),
   createdAt: z.string().optional(),
 });

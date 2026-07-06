@@ -1,8 +1,11 @@
 import { runNewsAgent } from "../src/server/agents/news";
 import { runOnchainAgent } from "../src/server/agents/onchain";
 import { runDecisionAgent } from "../src/server/agents/decision";
+import { buildExecutionPreview, runExecutionAgent } from "../src/server/agents/execution";
 import { runSocialAgent } from "../src/server/agents/social";
+import { createAgentRunRecord } from "../src/server/storage";
 import type { AgentResult } from "../src/server/types";
+import { POST as confirmExecution } from "../src/app/api/execute/confirm/route";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -467,11 +470,116 @@ async function runDecisionChecks() {
   assert(Array.isArray(missingData) && missingData.length > 0, "Decision output must include missing data when specialist agents are absent.");
 }
 
+async function runExecutionChecks() {
+  const defaultPreview = buildExecutionPreview({
+    action: "reduce_exposure",
+    fromToken: "MEME",
+    toToken: "USDC",
+    percent: 10,
+    riskScore: 40,
+    estimatedValueUsd: 100,
+    network: "GOAT Network",
+    simulationStatus: "passed",
+  });
+  assert(defaultPreview.policy?.autoExecute === false, "Auto-execute must default to false.");
+  assert(defaultPreview.requiresApproval === true, "Allowed trade action must require wallet approval.");
+  assert(defaultPreview.audit?.serverCanSign === false, "Server signing must remain disabled.");
+
+  const policyBlocked = buildExecutionPreview({
+    action: "reduce_exposure",
+    fromToken: "MEME",
+    toToken: "USDC",
+    percent: 90,
+    riskScore: 40,
+    estimatedValueUsd: 100,
+    network: "GOAT Network",
+  });
+  assert(policyBlocked.requiresApproval === false, "Policy violation must not prepare a wallet approval.");
+  assert(Boolean(policyBlocked.blockedReason), "Policy violation must expose blocked reason.");
+
+  const manualReview = buildExecutionPreview({
+    action: "manual_review",
+    fromToken: "MEME",
+    toToken: "USDC",
+    percent: 10,
+    riskScore: 60,
+  });
+  assert(manualReview.requiresApproval === false && manualReview.action === "no_action", "Manual review action must not prepare a transaction.");
+
+  const executionResult = runExecutionAgent({
+    action: "swap_to_stable",
+    fromToken: "MEME",
+    toToken: "USDC",
+    percent: 10,
+    riskScore: 40,
+    estimatedValueUsd: 100,
+    network: "GOAT Network",
+    simulationStatus: "passed",
+  });
+  assert(getRaw<{ preview?: unknown }>(executionResult, "preview") !== undefined, "Execution Agent must expose preview raw signal.");
+
+  const failedSimulationResponse = await confirmExecution(
+    new Request("http://localhost/api/execute/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        walletAddress: "0xabc",
+        txHash: `0x${"a".repeat(64)}`,
+        userApproved: true,
+        simulationStatus: "failed",
+      }),
+    }),
+  );
+  assert(failedSimulationResponse.status === 403, "Simulation failure must block confirmation.");
+
+  const invalidConfirmResponse = await confirmExecution(
+    new Request("http://localhost/api/execute/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        walletAddress: "0xabc",
+        txHash: "not-a-tx",
+        userApproved: true,
+      }),
+    }),
+  );
+  assert(invalidConfirmResponse.status === 400, "Confirm must reject invalid tx hash.");
+
+  const validConfirmResponse = await confirmExecution(
+    new Request("http://localhost/api/execute/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        decisionId: "decision_fixture",
+        walletAddress: "0xabc",
+        txHash: `0x${"b".repeat(64)}`,
+        userApproved: true,
+        network: "GOAT Network",
+        action: "reduce_exposure",
+        asset: "MEME",
+        valueUsd: 25,
+        simulationStatus: "passed",
+        policyAllowed: true,
+      }),
+    }),
+  );
+  assert(validConfirmResponse.status === 200, "Confirm must accept valid hash plus explicit user approval.");
+
+  const runRecord = createAgentRunRecord({
+    walletAddress: "0xabc",
+    mode: "token_scan",
+    inputSnapshot: { symbol: "MEME", chain: "base" },
+    targetToken: { symbol: "MEME", chain: "base", riskScore: 60 },
+    results: [blueChipLikeResult(), executionResult],
+  });
+  assert(runRecord.mode === "token_scan", "Agent run history must store run mode.");
+  assert(runRecord.inputSnapshot?.symbol === "MEME", "Agent run history must store input snapshot.");
+  assert(Array.isArray(runRecord.sourceStatuses) && runRecord.sourceStatuses.length > 0, "Agent run history must store source status snapshots.");
+}
+
 async function main() {
   await runOnchainChecks();
   await runNewsChecks();
   await runSocialChecks();
   await runDecisionChecks();
+  await runExecutionChecks();
 
   console.log("Agent fixture checks passed.");
 }

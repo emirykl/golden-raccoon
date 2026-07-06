@@ -9,12 +9,18 @@ import { getUserRuleRecord } from "@/server/storage";
 const bodySchema = z.object({
   action: z.string().optional(),
   walletAddress: z.string().optional(),
+  decisionId: z.string().optional(),
   fromToken: z.string().optional(),
   toToken: z.string().optional(),
   percent: z.number().min(0).max(100).optional(),
   riskScore: z.number().min(0).max(100).optional(),
   estimatedValueUsd: z.number().min(0).optional(),
   network: z.string().optional(),
+  slippageBps: z.number().min(0).max(10_000).optional(),
+  priceImpactBps: z.number().min(0).optional(),
+  gasEstimateUsd: z.number().min(0).optional(),
+  simulationStatus: z.enum(["not_required", "pending", "passed", "failed", "unavailable"]).optional(),
+  simulationRevertReason: z.string().optional(),
 });
 
 export async function POST(request: Request) {

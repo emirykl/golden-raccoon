@@ -16,8 +16,11 @@ const targetTokenSchema = z.object({
 
 const bodySchema = z.object({
   walletAddress: z.string().min(1),
+  mode: z.enum(["portfolio_review", "token_scan", "pre_buy_check", "holding_review", "execution_prepare"]).optional(),
+  inputSnapshot: z.record(z.string(), z.unknown()).optional(),
   targetToken: targetTokenSchema.optional(),
   results: z.array(z.unknown()).min(1),
+  userAction: z.enum(["pending", "approved", "rejected", "adjusted", "executed"]).optional(),
 });
 
 export function GET(request: NextRequest) {
@@ -50,8 +53,11 @@ export async function POST(request: Request) {
     NextResponse.json(
       createAgentRunRecord({
         walletAddress: parsed.data.walletAddress,
+        mode: parsed.data.mode,
+        inputSnapshot: parsed.data.inputSnapshot,
         targetToken: parsed.data.targetToken,
         results: parsed.data.results as AgentResult[],
+        userAction: parsed.data.userAction,
       }),
       { status: 201 },
     ),

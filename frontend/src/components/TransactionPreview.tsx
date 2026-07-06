@@ -53,6 +53,27 @@ export function TransactionPreview({ preview }: { preview: Preview }) {
           </div>
         </div>
       ) : null}
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="text-xs text-white/38">Policy</div>
+          <div className="mt-1 text-sm font-semibold">{preview.policyStatus?.allowed ? "Allowed" : preview.blockedReason ? "Blocked" : "Review"}</div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="text-xs text-white/38">Simulation</div>
+          <div className="mt-1 text-sm font-semibold">{preview.simulation?.status?.replaceAll("_", " ") ?? "Unavailable"}</div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="text-xs text-white/38">Slippage / gas</div>
+          <div className="mt-1 text-sm font-semibold">
+            {preview.slippageBps ?? 0} bps · {formatUsd(preview.gasEstimateUsd ?? 0)}
+          </div>
+        </div>
+      </div>
+      {preview.quote ? (
+        <div className="mt-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white/48">
+          Route: {preview.quote.route.join(" -> ")} · Price impact {preview.quote.priceImpactBps} bps. {preview.quote.detail}
+        </div>
+      ) : null}
       {preview.audit ? (
         <div className="mt-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white/48">
           Server signing is disabled. {preview.audit.approvalRequired ? "Wallet approval is required." : "No wallet approval is required."}
