@@ -2,10 +2,13 @@ import { runNewsAgent } from "../src/server/agents/news";
 import { runOnchainAgent } from "../src/server/agents/onchain";
 import { runDecisionAgent } from "../src/server/agents/decision";
 import { buildExecutionPreview, runExecutionAgent } from "../src/server/agents/execution";
-import { scoreToRiskLevel } from "../src/server/agents/shared";
+import { buildAgentResult, scoreToRiskLevel } from "../src/server/agents/shared";
+import { validateAgentResult } from "../src/server/agents/schema";
 import { runSocialAgent } from "../src/server/agents/social";
 import { resolveTokenIdentity } from "../src/server/identity/tokenIdentity";
 import { createAgentRunRecord, getStorageHealth } from "../src/server/storage";
+import { getCachePolicyMetadata } from "../src/server/cache/strategy";
+import { getProviderTimeoutBudget, resolveProviderConflict, runProviderFallbacks } from "../src/server/providers/adapter";
 import type { AgentResult } from "../src/server/types";
 import { POST as confirmExecution } from "../src/app/api/execute/confirm/route";
 
@@ -78,6 +81,7 @@ async function runOnchainChecks() {
     fetchPairs: async () => [pair()],
     fetchCreatorActivity: creatorOk,
   });
+  assertAgentContract(honeypot);
   assert(honeypot.recommendedAction === "avoid", "Honeypot fixture must recommend avoid.");
   assert(honeypot.riskScore >= 75, "Honeypot fixture must produce critical risk.");
 
@@ -94,6 +98,7 @@ async function runOnchainChecks() {
     fetchPairs: async () => [pair()],
     fetchCreatorActivity: creatorOk,
   });
+  assertAgentContract(blueChip);
   assert(blueChip.riskScore < 50, "Blue-chip/high-liquidity fixture must stay low/medium risk.");
   assert(blueChip.recommendedAction === "hold" || blueChip.recommendedAction === "watch", "Blue-chip/high-liquidity fixture must not force manual review.");
 
@@ -144,6 +149,13 @@ function item(title: string, description: string, source = "Fixture News", link 
 
 function getRaw<T>(result: AgentResult, key: string): T {
   return result.rawSignals?.[key] as T;
+}
+
+function assertAgentContract(result: AgentResult) {
+  const parsed = validateAgentResult(result);
+
+  assert(parsed.success, `${result.agent} result must satisfy runtime AgentResult schema.`);
+  assert(result.rawSignals?.scoreBreakdown !== undefined, `${result.agent} result must include score breakdown.`);
 }
 
 async function runNewsChecks() {
@@ -201,6 +213,7 @@ async function runNewsChecks() {
       },
     },
   );
+  assertAgentContract(unavailable);
   assert(unavailable.recommendedAction === "manual_review", "Unavailable news sources must not recommend hold.");
   assert(unavailable.status === "unavailable", "Unavailable news sources must be visible in agent status.");
 }
@@ -366,32 +379,20 @@ function blueChipLikeResult(): AgentResult {
 
 function agentResult(input: Partial<AgentResult> & Pick<AgentResult, "agent" | "riskScore" | "verdict" | "summary">): AgentResult {
   const riskScore = input.riskScore;
-  const riskLevel = riskScore >= 75 ? "critical" : riskScore >= 50 ? "high" : riskScore >= 25 ? "medium" : "low";
 
-  return {
-    status: riskScore >= 50 ? "warning" : "complete",
-    findings: [],
-    sources: [{ label: `${input.agent} fixture source`, status: "connected", checkedAt: now.toISOString(), reliability: 0.8 }],
-    dataQuality: {
-      mode: "live",
-      connectedSources: 1,
-      unavailableSources: 0,
-      mockSources: 0,
-      sourceCount: 1,
-      reliability: 0.8,
-      detail: "Fixture source.",
-    },
-    confidence: 0.72,
-    recommendedAction: riskScore >= 75 ? "avoid" : riskScore >= 50 ? "manual_review" : "hold",
-    blockingReasons: [],
-    missingData: [],
-    rawSignals: {},
-    createdAt: now.toISOString(),
-    ...input,
-    riskScore,
+  return buildAgentResult({
+    agent: input.agent,
     score: input.score ?? riskScore,
-    riskLevel: input.riskLevel ?? riskLevel,
-  };
+    verdict: input.verdict,
+    summary: input.summary,
+    findings: input.findings ?? [],
+    sources: input.sources ?? [{ label: `${input.agent} fixture source`, status: "connected", checkedAt: now.toISOString(), reliability: 0.8 }],
+    confidence: input.confidence ?? 0.72,
+    recommendedAction: input.recommendedAction ?? (riskScore >= 75 ? "avoid" : riskScore >= 50 ? "manual_review" : "hold"),
+    blockingReasons: input.blockingReasons,
+    missingData: input.missingData,
+    rawSignals: input.rawSignals,
+  });
 }
 
 function unavailableAgentResult(agent: AgentResult["agent"]): AgentResult {
@@ -470,6 +471,18 @@ async function runDecisionChecks() {
   const missingDataDecision = runDecisionAgent({ results: [blueChipLikeResult()] });
   const missingData = getRaw<{ missingData?: string[] }>(missingDataDecision, "explanation").missingData;
   assert(Array.isArray(missingData) && missingData.length > 0, "Decision output must include missing data when specialist agents are absent.");
+
+  const invalidDecision = runDecisionAgent({
+    results: [
+      {
+        ...blueChipLikeResult(),
+        findings: [{ label: "Invalid finding", severity: "low", detail: "Missing normalized contract fields." }],
+      } as AgentResult,
+    ],
+  });
+  assert(invalidDecision.recommendedAction === "manual_review", "Invalid specialist output must force manual review.");
+  assert(getRaw<string[]>(invalidDecision, "invalidAgentOutput").length === 1, "Invalid specialist output must be exposed in raw signals.");
+  assert(invalidDecision.sources.some((source) => source.errorCode === "invalid_agent_result"), "Invalid specialist output must be visible in sources.");
 }
 
 async function runExecutionChecks() {
@@ -580,6 +593,7 @@ async function runExecutionChecks() {
 async function runReadinessChecks() {
   assert(scoreToRiskLevel(12) === "low", "Scoring helper must map low risk consistently.");
   assert(scoreToRiskLevel(52) === "high", "Scoring helper must map high risk consistently.");
+  assert(validateAgentResult(blueChipLikeResult()).success, "Fixture AgentResult must pass runtime schema.");
 
   const symbolOnlyIdentity = resolveTokenIdentity({ symbol: "GOAT" });
   assert(symbolOnlyIdentity.confidenceLabel === "low", "Symbol-only identity must remain low confidence.");
@@ -594,6 +608,71 @@ async function runReadinessChecks() {
   assert(unresolvedScan.dataQuality?.mode === "unavailable", "Unresolved token scan must report unavailable data.");
 }
 
+async function runProviderReliabilityChecks() {
+  assert(getProviderTimeoutBudget("portfolio") === 8_000, "Portfolio provider timeout budget must be 8s.");
+  assert(getProviderTimeoutBudget("onchain") === 12_000, "Onchain provider timeout budget must be 12s.");
+  assert(getProviderTimeoutBudget("news") === 8_000, "News provider timeout budget must be 8s.");
+  assert(getProviderTimeoutBudget("social") === 12_000, "Social provider timeout budget must be 12s.");
+  assert(getProviderTimeoutBudget("decision") === 3_000, "Decision timeout budget must be 3s.");
+  assert(getProviderTimeoutBudget("execution") === 20_000, "Execution prepare timeout budget must be 20s.");
+
+  const fallback = await runProviderFallbacks([
+    {
+      kind: "news",
+      provider: "primary",
+      label: "Primary fixture provider",
+      fallbackRank: 0,
+      retries: 0,
+      run: async () => {
+        throw new Error("provider 429 rate limit");
+      },
+    },
+    {
+      kind: "news",
+      provider: "fallback",
+      label: "Fallback fixture provider",
+      fallbackRank: 1,
+      retries: 0,
+      run: async () => ({ ok: true }),
+    },
+  ]);
+  assert(fallback.ok === true, "Provider fallback chain must return fallback result when primary fails.");
+  assert(fallback.fallbackRank === 1, "Provider fallback result must expose fallback rank.");
+  assert(fallback.confidenceCap < 0.9, "Fallback provider result must cap confidence.");
+  assert(fallback.source.provider === "fallback", "Fallback provider must be visible in source metadata.");
+
+  const sellabilityConflict = resolveProviderConflict({
+    kind: "sellability",
+    primaryRisk: 10,
+    secondaryRisk: 96,
+    primaryLabel: "GoPlus",
+    secondaryLabel: "Tenderly simulation",
+  });
+  assert(sellabilityConflict.riskScore === 96 && sellabilityConflict.winner === "Tenderly simulation", "Simulation cannot-sell must override clean security flags.");
+
+  const liquidityConflict = resolveProviderConflict({
+    kind: "liquidity",
+    primaryRisk: 25,
+    secondaryRisk: 70,
+    primaryLabel: "DexScreener liquidity",
+    secondaryLabel: "Aggregator quote liquidity",
+  });
+  assert(liquidityConflict.riskScore === 70, "Liquidity conflicts must use the conservative risk.");
+}
+
+function runCachePolicyChecks() {
+  const portfolio = getCachePolicyMetadata("portfolio");
+  const onchain = getCachePolicyMetadata("onchain");
+  const news = getCachePolicyMetadata("news");
+  const social = getCachePolicyMetadata("social");
+  const execution = getCachePolicyMetadata("execution");
+
+  assert(portfolio.ttlClass === "short" && portfolio.seconds <= 60, "Portfolio balances must use short TTL.");
+  assert(onchain.ttlClass === "medium" && onchain.criticalFreshnessVisible, "Security flags must use medium TTL with freshness visible.");
+  assert(news.ttlClass === "long" && social.ttlClass === "long", "News/social cache policy must use longer TTL.");
+  assert(execution.scope === "no-store", "Execution planning must not be shared-cacheable.");
+}
+
 async function main() {
   await runOnchainChecks();
   await runNewsChecks();
@@ -601,6 +680,8 @@ async function main() {
   await runDecisionChecks();
   await runExecutionChecks();
   await runReadinessChecks();
+  await runProviderReliabilityChecks();
+  runCachePolicyChecks();
 
   console.log("Agent fixture checks passed.");
 }

@@ -1,5 +1,6 @@
 import type { AgentFinding, AgentMissingData, AgentRecommendedAction, AgentResult, RiskLevel, UserRule } from "@/server/types";
 import { buildAgentResult, clampScore, scoreToRiskLevel } from "@/server/agents/shared";
+import { validateAgentResult } from "@/server/agents/schema";
 
 type DecisionMode = "portfolio_review" | "token_scan" | "pre_buy_check" | "holding_review" | "execution_prepare";
 
@@ -86,6 +87,31 @@ function hasAgent(results: AgentResult[], agent: AgentResult["agent"]) {
 
 function getResult(results: AgentResult[], agent: AgentResult["agent"]) {
   return results.find((result) => result.agent === agent);
+}
+
+function getValidSpecialistResults(results: AgentResult[] = []) {
+  const validResults: AgentResult[] = [];
+  const invalidMessages: string[] = [];
+
+  for (const result of results) {
+    if (result.agent === "decision") {
+      continue;
+    }
+
+    const parsed = validateAgentResult(result);
+
+    if (parsed.success) {
+      validResults.push(parsed.data);
+      continue;
+    }
+
+    invalidMessages.push(`${result.agent ?? "unknown"}: ${parsed.error.issues[0]?.message ?? "Invalid AgentResult contract."}`);
+  }
+
+  return {
+    validResults,
+    invalidMessages,
+  };
 }
 
 function normalizeWeightMap(weights: Partial<Record<AgentResult["agent"], number>>) {
@@ -317,13 +343,24 @@ function getWorstFindings(results: AgentResult[]) {
     .slice(0, 8);
 }
 
-function getMissingData(results: AgentResult[], coverage: ReturnType<typeof getSourceCoverage>): AgentMissingData[] {
+function getMissingData(results: AgentResult[], coverage: ReturnType<typeof getSourceCoverage>, invalidMessages: string[] = []): AgentMissingData[] {
   const missing = results.flatMap((result) =>
     result.missingData.map((item) => ({
       ...item,
       field: `${result.agent}: ${item.field}`,
     })),
   );
+
+  for (const message of invalidMessages) {
+    missing.push({
+      field: "invalid agent output",
+      reason: message,
+      impact: "high",
+      requiredFor: "decision contract validation",
+      canRetry: true,
+      fallbackUsed: false,
+    });
+  }
 
   if (!hasAgent(results, "onchain")) {
     missing.push({ field: "onchain result", reason: "Onchain Agent result was not supplied.", impact: "high", requiredFor: "critical blocker detection" });
@@ -656,13 +693,26 @@ function buildDecisionFindings(input: {
   ];
 }
 
-function getDecisionSources(results: AgentResult[]) {
-  return results.map((result) => ({
+function getDecisionSources(results: AgentResult[], invalidResultCount: number) {
+  return [
+    ...results.map((result) => ({
     label: `${result.agent} agent`,
     status: result.sources.some((source) => source.status === "connected") ? ("connected" as const) : ("unavailable" as const),
     detail: `${result.verdict}: ${result.summary}`,
     reliability: result.confidence,
-  }));
+    })),
+    ...(invalidResultCount > 0
+      ? [
+          {
+            label: "Agent result contract validation",
+            status: "unavailable" as const,
+            detail: `${invalidResultCount} submitted agent result${invalidResultCount === 1 ? "" : "s"} failed runtime schema validation.`,
+            errorCode: "invalid_agent_result",
+            reliability: 0.05,
+          },
+        ]
+      : []),
+  ];
 }
 
 function getLlmGuard(explanation: DecisionExplanation) {
@@ -684,15 +734,23 @@ function getLlmGuard(explanation: DecisionExplanation) {
 }
 
 export function runDecisionAgent(input: DecisionInput): AgentResult {
-  const results = (input.results ?? []).filter((result) => result.agent !== "decision");
+  const { validResults: results, invalidMessages } = getValidSpecialistResults(input.results);
   const context = inferContext(results, input.context);
   const coverage = getSourceCoverage(results);
   const weightedScore = getWeightedScore(results, context);
   const score = applyCoveragePenalty(weightedScore.score, results);
-  const blockers = collectCriticalBlockers(results, coverage, input.executionReadiness);
+  const blockers = [
+    ...collectCriticalBlockers(results, coverage, input.executionReadiness),
+    ...invalidMessages.map((message) => ({
+      label: "Invalid agent output",
+      severity: "high" as const,
+      action: "manual_review" as const,
+      detail: message,
+    })),
+  ];
   const conflicts = resolveConflicts(results, context, score);
   const confidence = getDecisionConfidence(results, coverage);
-  const missingData = getMissingData(results, coverage);
+  const missingData = getMissingData(results, coverage, invalidMessages);
   const recommendedAction = decideAction({
     score,
     confidence,
@@ -735,7 +793,7 @@ export function runDecisionAgent(input: DecisionInput): AgentResult {
         ? `Decision Agent combined ${results.map((result) => result.agent).join(", ")} signals into a ${recommendedAction.replaceAll("_", " ")} recommendation.`
         : "Decision Agent needs specialist agent results before producing a recommendation.",
     findings,
-    sources: getDecisionSources(results),
+    sources: getDecisionSources(results, invalidMessages.length),
     confidence,
     recommendedAction,
     blockingReasons: blockers.map((blocker) => `${blocker.label}: ${blocker.detail}`),
@@ -746,6 +804,7 @@ export function runDecisionAgent(input: DecisionInput): AgentResult {
       sourceCoverage: coverage,
       blockers,
       conflicts,
+      invalidAgentOutput: invalidMessages,
       explanation,
       userRules: input.userRules,
       userRiskProfile: input.userRiskProfile,

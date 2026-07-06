@@ -9,6 +9,7 @@ import type {
   UserRule,
 } from "@/server/types";
 import { getDefaultRules } from "@/server/rules/defaultRules";
+import { validateAgentResult } from "@/server/agents/schema";
 
 type CreateAgentRunInput = {
   walletAddress: string;
@@ -126,6 +127,14 @@ export function getAgentRunRecord(id: string) {
 }
 
 export function createAgentRunRecord(input: CreateAgentRunInput): AgentRunRecord {
+  for (const result of input.results) {
+    const parsed = validateAgentResult(result);
+
+    if (!parsed.success) {
+      throw new Error(`Invalid AgentResult cannot be stored for ${result.agent}: ${parsed.error.message}`);
+    }
+  }
+
   const decision = [...input.results].reverse().find((result) => result.agent === "decision");
   const failed = input.results.some((result) => result.status === "error" || result.status === "unavailable");
   const completed = input.results.some((result) => result.agent === "decision");

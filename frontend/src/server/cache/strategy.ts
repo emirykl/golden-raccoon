@@ -12,58 +12,101 @@ export type ApiCacheKey =
   | "rules"
   | "transactions";
 
-export const apiCacheStrategy: Record<ApiCacheKey, { seconds: number; scope: "private" | "public" | "no-store"; detail: string }> = {
+export type ApiCachePolicy = {
+  name: string;
+  seconds: number;
+  scope: "private" | "public" | "no-store";
+  ttlClass: "short" | "medium" | "long" | "none";
+  criticalFreshnessVisible: boolean;
+  detail: string;
+};
+
+export const apiCacheStrategy: Record<ApiCacheKey, ApiCachePolicy> = {
   portfolio: {
+    name: "portfolio-balances-short-ttl",
     seconds: 45,
     scope: "private",
+    ttlClass: "short",
+    criticalFreshnessVisible: true,
     detail: "Wallet portfolio snapshots can be reused briefly for the same user.",
   },
   news: {
+    name: "news-public-long-ttl",
     seconds: 600,
     scope: "public",
+    ttlClass: "long",
+    criticalFreshnessVisible: true,
     detail: "RSS news data is cached for 10 minutes.",
   },
   social: {
+    name: "social-public-long-ttl",
     seconds: 600,
     scope: "public",
+    ttlClass: "long",
+    criticalFreshnessVisible: true,
     detail: "Public metadata checks are cached for 10 minutes.",
   },
   onchain: {
+    name: "security-flags-medium-ttl",
     seconds: 900,
     scope: "public",
+    ttlClass: "medium",
+    criticalFreshnessVisible: true,
     detail: "Onchain security and liquidity checks are cached for 15 minutes.",
   },
   decision: {
+    name: "decision-no-store",
     seconds: 0,
     scope: "no-store",
+    ttlClass: "none",
+    criticalFreshnessVisible: true,
     detail: "Decision responses depend on submitted agent results.",
   },
   execution: {
+    name: "execution-no-store",
     seconds: 0,
     scope: "no-store",
+    ttlClass: "none",
+    criticalFreshnessVisible: true,
     detail: "Execution planning and confirmation must never be shared-cacheable.",
   },
   history: {
+    name: "history-no-store",
     seconds: 0,
     scope: "no-store",
+    ttlClass: "none",
+    criticalFreshnessVisible: false,
     detail: "History is wallet-specific and should be fetched fresh.",
   },
   scan: {
+    name: "scan-no-store",
     seconds: 0,
     scope: "no-store",
+    ttlClass: "none",
+    criticalFreshnessVisible: true,
     detail: "Token scans combine live agent outputs and should be fetched fresh.",
   },
   rules: {
+    name: "rules-no-store",
     seconds: 0,
     scope: "no-store",
+    ttlClass: "none",
+    criticalFreshnessVisible: false,
     detail: "User execution rules are wallet-specific and should be fetched fresh.",
   },
   transactions: {
+    name: "transactions-no-store",
     seconds: 0,
     scope: "no-store",
+    ttlClass: "none",
+    criticalFreshnessVisible: false,
     detail: "Transactions are wallet-specific audit records and should be fetched fresh.",
   },
 };
+
+export function getCachePolicyMetadata(key: ApiCacheKey) {
+  return apiCacheStrategy[key];
+}
 
 export function withCacheHeaders<T>(response: NextResponse<T>, key: ApiCacheKey) {
   const strategy = apiCacheStrategy[key];

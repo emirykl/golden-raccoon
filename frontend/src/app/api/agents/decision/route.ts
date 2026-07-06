@@ -7,7 +7,7 @@ import { checkRateLimit } from "@/server/security/rateLimit";
 
 const agentResultSchema = z.object({
   agent: z.enum(["portfolio", "news", "social", "onchain", "decision", "execution"]),
-  status: z.enum(["idle", "running", "complete", "partial", "warning", "error", "unavailable", "blocked"]),
+  status: z.enum(["idle", "running", "complete", "partial", "warning", "error", "unavailable", "blocked", "manual_review_required"]),
   riskScore: z.number().min(0).max(100).optional(),
   score: z.number().min(0).max(100),
   riskLevel: z.enum(["low", "medium", "high", "critical"]).optional(),
@@ -35,6 +35,17 @@ const agentResultSchema = z.object({
       checkedAt: z.string().optional(),
       latencyMs: z.number().optional(),
       error: z.string().optional(),
+      errorCode: z.string().optional(),
+      provider: z.string().optional(),
+      fallbackRank: z.number().optional(),
+      cache: z
+        .object({
+          policy: z.string(),
+          ttlSeconds: z.number(),
+          hit: z.boolean().optional(),
+          freshnessSeconds: z.number().optional(),
+        })
+        .optional(),
       reliability: z.number().min(0).max(1).optional(),
     })
   ),
@@ -47,6 +58,11 @@ const agentResultSchema = z.object({
       sourceCount: z.number(),
       reliability: z.number(),
       lastCheckedAt: z.string().optional(),
+      freshnessSeconds: z.number().optional(),
+      averageLatencyMs: z.number().optional(),
+      conflictCount: z.number().optional(),
+      providerErrors: z.array(z.object({ label: z.string(), code: z.string().optional(), detail: z.string().optional() })).optional(),
+      cache: z.object({ policy: z.string(), hitCount: z.number(), missCount: z.number(), staleCount: z.number() }).optional(),
       detail: z.string(),
     })
     .optional(),
@@ -62,6 +78,16 @@ const agentResultSchema = z.object({
     "no_action",
   ]),
   blockingReasons: z.array(z.string()).optional(),
+  blockingReasonDetails: z
+    .array(
+      z.object({
+        category: z.enum(["critical", "policy", "identity", "provider_coverage", "simulation"]),
+        severity: z.enum(["low", "medium", "high", "critical"]),
+        detail: z.string(),
+        sourceLabel: z.string().optional(),
+      }),
+    )
+    .optional(),
   missingData: z
     .array(
       z.object({
@@ -69,6 +95,8 @@ const agentResultSchema = z.object({
         reason: z.string(),
         impact: z.enum(["low", "medium", "high"]),
         requiredFor: z.string().optional(),
+        canRetry: z.boolean().optional(),
+        fallbackUsed: z.boolean().optional(),
       }),
     )
     .optional(),

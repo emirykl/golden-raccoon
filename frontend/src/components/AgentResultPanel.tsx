@@ -1,4 +1,21 @@
 import type { AgentResult } from "@/server/types";
+import { NoDataState } from "@/components/NoDataState";
+
+function isAgentResultForUi(result: AgentResult) {
+  return Boolean(
+    result &&
+      typeof result.agent === "string" &&
+      typeof result.verdict === "string" &&
+      typeof result.summary === "string" &&
+      typeof result.score === "number" &&
+      typeof result.confidence === "number" &&
+      Array.isArray(result.findings) &&
+      Array.isArray(result.sources) &&
+      Array.isArray(result.missingData) &&
+      result.dataQuality &&
+      typeof result.dataQuality.detail === "string",
+  );
+}
 
 function getRawPreview(rawSignals?: Record<string, unknown>) {
   if (!rawSignals) return [];
@@ -13,6 +30,15 @@ function getRawPreview(rawSignals?: Record<string, unknown>) {
 }
 
 export function AgentResultPanel({ result }: { result: AgentResult }) {
+  if (!isAgentResultForUi(result)) {
+    return (
+      <NoDataState
+        title="Invalid agent result"
+        detail="The agent result failed the UI contract boundary and cannot be treated as a safe signal."
+      />
+    );
+  }
+
   const explanation = result.rawSignals?.explanation as
     | {
         confidenceExplanation?: string;

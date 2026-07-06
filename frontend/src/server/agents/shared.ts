@@ -1,4 +1,5 @@
-import type { AgentFinding, AgentMissingData, AgentRecommendedAction, AgentResult, AgentSource, RiskLevel, SourceDataQuality } from "@/server/types";
+import type { AgentBlockingReason, AgentFinding, AgentMissingData, AgentRecommendedAction, AgentResult, AgentSource, RiskLevel, SourceDataQuality } from "@/server/types";
+import { validateAgentResult } from "@/server/agents/schema";
 
 type BuildAgentResultInput = {
   agent: AgentResult["agent"];
@@ -10,6 +11,7 @@ type BuildAgentResultInput = {
   confidence?: number;
   recommendedAction: AgentRecommendedAction;
   blockingReasons?: string[];
+  blockingReasonDetails?: AgentBlockingReason[];
   missingData?: AgentMissingData[];
   rawSignals?: Record<string, unknown>;
 };
@@ -77,7 +79,6 @@ export function getSourceDataQuality(sources: AgentSource[]): SourceDataQuality 
   const connectedSources = sources.filter((source) => source.status === "connected").length;
   const unavailableSources = sources.filter((source) => source.status === "unavailable").length;
   const mockSources = sources.filter((source) => source.status === "mock").length;
-  const mode = connectedSources === 0 ? "unavailable" : unavailableSources > 0 || mockSources > 0 ? "partial" : "live";
   const sourceCount = sources.length;
   const checkedTimes = sources
     .map((source) => source.checkedAt)
@@ -92,6 +93,36 @@ export function getSourceDataQuality(sources: AgentSource[]): SourceDataQuality 
           return total + 0.1;
         }, 0) / sourceCount
       : 0;
+  const latencies = sources.map((source) => source.latencyMs).filter((value): value is number => typeof value === "number");
+  const providerErrors = sources
+    .filter((source) => source.error || source.errorCode)
+    .map((source) => ({
+      label: source.label,
+      code: source.errorCode,
+      detail: source.error,
+    }));
+  const cacheSources = sources.filter((source) => source.cache);
+  const cache = cacheSources.length > 0
+    ? {
+        policy: "mixed",
+        hitCount: cacheSources.filter((source) => source.cache?.hit === true).length,
+        missCount: cacheSources.filter((source) => source.cache?.hit === false).length,
+        staleCount: cacheSources.filter((source) => (source.cache?.freshnessSeconds ?? 0) > source.cache!.ttlSeconds).length,
+      }
+    : undefined;
+  const newestCheckedAt = checkedTimes.at(-1);
+  const freshnessSeconds = newestCheckedAt ? Math.max(0, Math.round((Date.now() - new Date(newestCheckedAt).getTime()) / 1000)) : undefined;
+  const conflictCount = sources.filter((source) => source.status === "connected" && source.detail?.toLowerCase().includes("conflict")).length;
+  const mode =
+    conflictCount > 0
+      ? "conflicting"
+      : connectedSources === 0
+        ? "unavailable"
+        : freshnessSeconds !== undefined && freshnessSeconds > 86_400
+          ? "stale"
+          : unavailableSources > 0 || mockSources > 0
+            ? "partial"
+            : "live";
 
   return {
     mode,
@@ -100,13 +131,22 @@ export function getSourceDataQuality(sources: AgentSource[]): SourceDataQuality 
     mockSources,
     sourceCount,
     reliability,
-    lastCheckedAt: checkedTimes.at(-1),
+    lastCheckedAt: newestCheckedAt,
+    freshnessSeconds,
+    averageLatencyMs: latencies.length > 0 ? Math.round(latencies.reduce((total, value) => total + value, 0) / latencies.length) : undefined,
+    conflictCount,
+    providerErrors,
+    cache,
     detail:
       mode === "live"
         ? "All reported sources are connected live sources."
         : mode === "partial"
           ? "Some sources are unavailable or mock. Treat the result conservatively."
-          : "No connected live source contributed to this result.",
+          : mode === "stale"
+            ? "Connected sources are stale. Treat the result conservatively."
+            : mode === "conflicting"
+              ? "Connected sources reported conflicting signals. Use the conservative interpretation."
+              : "No connected live source contributed to this result.",
   };
 }
 
@@ -122,6 +162,10 @@ function confidenceFromSources(confidence: number | undefined, sources: AgentSou
     return Math.min(base, 0.64);
   }
 
+  if (dataQuality.mode === "stale" || dataQuality.mode === "conflicting") {
+    return Math.min(base, 0.58);
+  }
+
   return base;
 }
 
@@ -133,6 +177,8 @@ function getMissingData(sources: AgentSource[], missingData: AgentMissingData[] 
       reason: source.detail ?? "Source unavailable.",
       impact: "medium" as const,
       requiredFor: "agent confidence",
+      canRetry: true,
+      fallbackUsed: source.fallbackRank !== undefined && source.fallbackRank > 0,
     }));
 
   return [...missingData, ...sourceMissingData];
@@ -151,6 +197,50 @@ function getBlockingReasons(findings: AgentFinding[], sources: AgentSource[], bl
   ];
 }
 
+function getBlockingReasonDetails(findings: AgentFinding[], sources: AgentSource[], extra: AgentBlockingReason[] = []): AgentBlockingReason[] {
+  const criticalFindings = findings
+    .filter((finding) => finding.severity === "critical")
+    .map((finding) => ({
+      category: "critical" as const,
+      severity: "critical" as const,
+      detail: finding.detail,
+      sourceLabel: finding.sourceLabel,
+    }));
+  const noConnectedSources = sources.length > 0 && sources.every((source) => source.status !== "connected")
+    ? [
+        {
+          category: "provider_coverage" as const,
+          severity: "high" as const,
+          detail: "No connected live source contributed to this result.",
+          sourceLabel: "source coverage",
+        },
+      ]
+    : [];
+
+  return [...extra, ...criticalFindings, ...noConnectedSources];
+}
+
+function getScoreBreakdown(findings: AgentFinding[]) {
+  return findings.map((finding) => ({
+    label: finding.label,
+    severity: finding.severity,
+    scoreImpact: finding.scoreImpact,
+    weight: finding.weight,
+    sourceLabel: finding.sourceLabel,
+    confidence: finding.confidence,
+  }));
+}
+
+function getStatus(dataQuality: SourceDataQuality, findings: AgentFinding[], riskLevel: RiskLevel, recommendedAction: AgentRecommendedAction): AgentResult["status"] {
+  if (dataQuality.mode === "unavailable") return "unavailable";
+  if (recommendedAction === "manual_review") return "manual_review_required";
+  if (findings.some((finding) => finding.severity === "critical")) return "blocked";
+  if (dataQuality.mode === "partial" || dataQuality.mode === "stale" || dataQuality.mode === "conflicting") return "partial";
+  if (findings.some((finding) => finding.severity === "high") || riskLevel === "high" || riskLevel === "critical") return "warning";
+
+  return "complete";
+}
+
 export function buildAgentResult(input: BuildAgentResultInput): AgentResult {
   const sources = input.sources ?? [
     {
@@ -163,12 +253,11 @@ export function buildAgentResult(input: BuildAgentResultInput): AgentResult {
   const findings = normalizeFindings(input.findings, fallbackSource);
   const riskScore = applyCriticalOverride(input.score, findings);
   const riskLevel = scoreToRiskLevel(riskScore);
-  const hasHighRiskFinding = findings.some((finding) => finding.severity === "high" || finding.severity === "critical");
   const dataQuality = getSourceDataQuality(sources);
 
-  return {
+  const result: AgentResult = {
     agent: input.agent,
-    status: dataQuality.mode === "unavailable" ? "unavailable" : hasHighRiskFinding || riskLevel === "high" || riskLevel === "critical" ? "warning" : "complete",
+    status: getStatus(dataQuality, findings, riskLevel, input.recommendedAction),
     riskScore,
     score: riskScore,
     riskLevel,
@@ -180,10 +269,23 @@ export function buildAgentResult(input: BuildAgentResultInput): AgentResult {
     confidence: confidenceFromSources(input.confidence, sources),
     recommendedAction: input.recommendedAction,
     blockingReasons: getBlockingReasons(findings, sources, input.blockingReasons),
+    blockingReasonDetails: getBlockingReasonDetails(findings, sources, input.blockingReasonDetails),
     missingData: getMissingData(sources, input.missingData),
-    rawSignals: input.rawSignals,
+    rawSignals: {
+      ...(input.rawSignals ?? {}),
+      scoreBreakdown: (input.rawSignals?.scoreBreakdown as unknown) ?? getScoreBreakdown(findings),
+      riskLevelThresholds,
+    },
     createdAt: new Date().toISOString(),
   };
+
+  const parsed = validateAgentResult(result);
+
+  if (!parsed.success) {
+    throw new Error(`Invalid AgentResult contract for ${input.agent}: ${parsed.error.message}`);
+  }
+
+  return result;
 }
 
 export function buildUnavailableAgentResult(

@@ -1,6 +1,15 @@
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 
-export type AgentStatus = "idle" | "running" | "complete" | "partial" | "warning" | "error" | "unavailable" | "blocked";
+export type AgentStatus =
+  | "idle"
+  | "running"
+  | "complete"
+  | "partial"
+  | "warning"
+  | "error"
+  | "unavailable"
+  | "blocked"
+  | "manual_review_required";
 
 export type AgentSource = {
   label: string;
@@ -10,6 +19,15 @@ export type AgentSource = {
   checkedAt?: string;
   latencyMs?: number;
   error?: string;
+  errorCode?: string;
+  provider?: string;
+  fallbackRank?: number;
+  cache?: {
+    policy: string;
+    ttlSeconds: number;
+    hit?: boolean;
+    freshnessSeconds?: number;
+  };
   reliability?: number;
 };
 
@@ -21,6 +39,20 @@ export type SourceDataQuality = {
   sourceCount: number;
   reliability: number;
   lastCheckedAt?: string;
+  freshnessSeconds?: number;
+  averageLatencyMs?: number;
+  conflictCount?: number;
+  providerErrors?: Array<{
+    label: string;
+    code?: string;
+    detail?: string;
+  }>;
+  cache?: {
+    policy: string;
+    hitCount: number;
+    missCount: number;
+    staleCount: number;
+  };
   detail: string;
 };
 
@@ -60,6 +92,7 @@ export type AgentResult = {
   confidence: number;
   recommendedAction: AgentRecommendedAction;
   blockingReasons: string[];
+  blockingReasonDetails?: AgentBlockingReason[];
   missingData: AgentMissingData[];
   rawSignals?: Record<string, unknown>;
   createdAt: string;
@@ -70,6 +103,15 @@ export type AgentMissingData = {
   reason: string;
   impact: "low" | "medium" | "high";
   requiredFor?: string;
+  canRetry?: boolean;
+  fallbackUsed?: boolean;
+};
+
+export type AgentBlockingReason = {
+  category: "critical" | "policy" | "identity" | "provider_coverage" | "simulation";
+  severity: RiskLevel;
+  detail: string;
+  sourceLabel?: string;
 };
 
 export type AgentInputIdentity = {
