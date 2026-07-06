@@ -1,5 +1,6 @@
 import type { AgentFinding, AgentResult, AgentSource, RiskLevel } from "@/server/types";
 import { buildAgentResult, clampScore } from "@/server/agents/shared";
+import { evaluateUrlSafety } from "@/server/security/urlSafety";
 
 type SocialAgentInput = {
   query?: string;
@@ -476,6 +477,37 @@ function resolveOfficialIdentity(input: SocialAgentInput, metadata: SocialMetada
   };
 }
 
+function getMandatorySocialResolverReport(input: SocialAgentInput, identity: ReturnType<typeof resolveOfficialIdentity>) {
+  return {
+    userProvidedHandle: getTwitterHandle(input.twitterUrl, input.query),
+    websiteLinkedHandle: identity.websiteLinksTwitter ? identity.handle : undefined,
+    dexScreenerLinkedHandle: input.dexScreenerPairUrl ? "requires_dex_metadata_provider" : undefined,
+    directoryLinkedHandle: input.coingeckoId ? "requires_directory_metadata_provider" : undefined,
+    mutualVerificationScore: identity.confidence,
+    requiredForHoldConfidence: true,
+  };
+}
+
+function getImpersonationRisk(input: SocialAgentInput, identity: ReturnType<typeof resolveOfficialIdentity>, data?: SocialProviderData) {
+  const provided = getTwitterHandle(input.twitterUrl, input.query)?.toLowerCase();
+  const provider = data?.account?.handle?.toLowerCase();
+  const similarHandle = Boolean(provided && provider && provided !== provider && (provided.includes(provider) || provider.includes(provided)));
+  const recentlyCreated = typeof identity.accountAgeDays === "number" && identity.accountAgeDays < 30;
+  const followerMismatch = Boolean(data?.account && (data.account.followers ?? 0) < 250 && (data.account.postCount ?? 0) > 100);
+  const fakeVerifiedStyle = /official|support|airdrop|claim/i.test(`${data?.account?.displayName ?? ""} ${data?.account?.handle ?? ""}`) && !data?.account?.verified;
+  const domainMismatch = identity.warnings.some((warning) => warning.toLowerCase().includes("domain"));
+  const riskScore = clampScore((similarHandle ? 28 : 0) + (recentlyCreated ? 26 : 0) + (followerMismatch ? 18 : 0) + (fakeVerifiedStyle ? 22 : 0) + (domainMismatch ? 24 : 0));
+
+  return {
+    similarHandle,
+    recentlyCreated,
+    followerMismatch,
+    fakeVerifiedStyle,
+    domainMismatch,
+    riskScore,
+  };
+}
+
 function collectPostLinks(metadata: SocialMetadata[], data?: SocialProviderData) {
   const posts = [...(data?.officialPosts ?? []), ...(data?.searchPosts ?? [])];
   const replyLinks = [...(data?.replies ?? []), ...posts.flatMap((post) => post.replies ?? [])].flatMap((reply) => {
@@ -515,6 +547,30 @@ function getLinkSafety(input: SocialAgentInput, metadata: SocialMetadata[], data
     mismatchedLinks: Array.from(new Set(mismatchedLinks)).slice(0, 8),
     officialDomains,
     riskScore,
+  };
+}
+
+function getPhishingScanner(input: SocialAgentInput, metadata: SocialMetadata[], data?: SocialProviderData) {
+  const links = collectPostLinks(metadata, data);
+  const websiteDomain = getDomain(input.websiteUrl);
+  const scans = links.map((link) => {
+    const text = normalizeText(link);
+    const safety = evaluateUrlSafety(link, websiteDomain);
+
+    return {
+      link,
+      claimOrAirdropLanguage: phishingKeywords.some((keyword) => text.includes(keyword)),
+      drainerDomain: text.includes("drainer") || text.includes("claim") || text.includes("wallet"),
+      shortenedUrl: /bit\.ly|t\.co|tinyurl|goo\.gl|linktr\.ee/i.test(link),
+      suspiciousRedirectChain: !safety.safe,
+      walletConnectionPromptRisk: text.includes("connect") || text.includes("wallet"),
+      issues: safety.issues,
+    };
+  });
+
+  return {
+    linksChecked: scans.length,
+    riskyLinks: scans.filter((scan) => scan.claimOrAirdropLanguage || scan.drainerDomain || scan.shortenedUrl || scan.suspiciousRedirectChain || scan.walletConnectionPromptRisk).slice(0, 10),
   };
 }
 
@@ -580,6 +636,46 @@ function getBotShillSummary(data: SocialProviderData | undefined, now: Date): Bo
     hypePostCount,
     newReplyAccountCount,
     riskScore: clampScore(repeatedTextGroups * 24 + lowQualityReplyCount * 8 + hypePostCount * 12 + newReplyAccountCount * 10),
+  };
+}
+
+function getMeasurableBotScore(data: SocialProviderData | undefined, now: Date) {
+  const posts = [...(data?.officialPosts ?? []), ...(data?.searchPosts ?? [])];
+  const replies = [...(data?.replies ?? []), ...posts.flatMap((post) => post.replies ?? [])];
+  const texts = replies.map((reply) => normalizeText(reply.text)).filter(Boolean);
+  const duplicateReplyRatio = texts.length > 0 ? 1 - new Set(texts).size / texts.length : undefined;
+  const newAccountRatio = replies.length > 0 ? replies.filter((reply) => {
+    if (!reply.authorCreatedAt) return false;
+    const createdAt = new Date(reply.authorCreatedAt);
+
+    return !Number.isNaN(createdAt.getTime()) && now.getTime() - createdAt.getTime() < 30 * 86_400_000;
+  }).length / replies.length : undefined;
+  const repeatedPhraseRatio = texts.length > 0 ? texts.filter((text) => countMatches(text, ["100x", "moon", "pump", "guaranteed", "airdrop"]) > 0).length / texts.length : undefined;
+  const positiveOnlyReplyRatio = texts.length > 0 ? texts.filter((text) => countMatches(text, ["great", "bullish", "moon", "gem", "100x"]) > 0 && countMatches(text, complaintKeywords) === 0).length / texts.length : undefined;
+  const engagementAnomalyScore = clampScore(
+    ((duplicateReplyRatio ?? 0) * 35) +
+      ((newAccountRatio ?? 0) * 25) +
+      ((repeatedPhraseRatio ?? 0) * 20) +
+      ((positiveOnlyReplyRatio ?? 0) * 20),
+  );
+
+  return {
+    available: replies.length > 0,
+    duplicateReplyRatio,
+    newAccountRatio,
+    repeatedPhraseRatio,
+    positiveOnlyReplyRatio,
+    engagementAnomalyScore,
+  };
+}
+
+function getSocialSourceLimitations(providerDataAvailable: boolean, botScore: ReturnType<typeof getMeasurableBotScore>) {
+  return {
+    xApiMetricsAvailable: Boolean(process.env.X_BEARER_TOKEN),
+    fakeMetricsGenerated: false,
+    searchFallbackConfidenceCap: providerDataAvailable ? undefined : 0.48,
+    commentsOrRepliesAvailable: botScore.available,
+    botScoreStatus: botScore.available ? "available" : "unavailable",
   };
 }
 
@@ -653,6 +749,10 @@ function buildFindings(input: {
   engagement: ReturnType<typeof getEngagementRisk>;
   linkSafety: LinkSafetySummary;
   botShill: BotShillSummary;
+  measurableBotScore: ReturnType<typeof getMeasurableBotScore>;
+  phishingScanner: ReturnType<typeof getPhishingScanner>;
+  impersonation: ReturnType<typeof getImpersonationRisk>;
+  limitations: ReturnType<typeof getSocialSourceLimitations>;
   communitySubstance: ReturnType<typeof getCommunitySubstanceRisk>;
   negativeCommunity: ReturnType<typeof getNegativeCommunityRisk>;
   coverage: ReturnType<typeof getSourceCoverage>;
@@ -667,6 +767,43 @@ function buildFindings(input: {
   const contractMismatch = Boolean(input.providerData?.officialPosts?.some((post) => normalizeText(post.text).includes("contract mismatch")));
 
   return [
+    {
+      label: "Mandatory official social resolver",
+      severity: input.identity.confidence >= 0.75 ? "low" : input.identity.confidence >= 0.45 ? "medium" : "high",
+      scoreImpact: clampScore(100 - input.identity.confidence * 100),
+      detail: "Resolver requires user-provided handle, website-linked handle, directory/DexScreener-linked handle, and mutual verification before strong confidence.",
+      raw: JSON.stringify(input.identity),
+    },
+    {
+      label: "Impersonation detector",
+      severity: severityForScore(input.impersonation.riskScore),
+      scoreImpact: input.impersonation.riskScore,
+      detail: `Similar handle ${input.impersonation.similarHandle ? "yes" : "no"}, new account ${input.impersonation.recentlyCreated ? "yes" : "no"}, follower mismatch ${input.impersonation.followerMismatch ? "yes" : "no"}, fake verified-style naming ${input.impersonation.fakeVerifiedStyle ? "yes" : "no"}, domain mismatch ${input.impersonation.domainMismatch ? "yes" : "no"}.`,
+      raw: JSON.stringify(input.impersonation),
+    },
+    {
+      label: "Phishing link scanner",
+      severity: input.phishingScanner.riskyLinks.length > 0 ? "critical" : "low",
+      scoreImpact: input.phishingScanner.riskyLinks.length > 0 ? 88 : 8,
+      detail: `${input.phishingScanner.linksChecked} link${input.phishingScanner.linksChecked === 1 ? "" : "s"} scanned for claim/airdrop/connect-wallet language, drainer domains, shortened URLs and suspicious redirects.`,
+      raw: JSON.stringify(input.phishingScanner),
+    },
+    {
+      label: "Measurable bot/shill score",
+      severity: input.measurableBotScore.available ? severityForScore(input.measurableBotScore.engagementAnomalyScore) : "medium",
+      scoreImpact: input.measurableBotScore.engagementAnomalyScore,
+      detail: input.measurableBotScore.available
+        ? `Duplicate reply ratio ${(input.measurableBotScore.duplicateReplyRatio ?? 0).toFixed(2)}, new account ratio ${(input.measurableBotScore.newAccountRatio ?? 0).toFixed(2)}, repeated phrase ratio ${(input.measurableBotScore.repeatedPhraseRatio ?? 0).toFixed(2)}, positive-only ratio ${(input.measurableBotScore.positiveOnlyReplyRatio ?? 0).toFixed(2)}.`
+        : "Comments/replies unavailable, so bot score is marked unavailable instead of fabricated.",
+      raw: JSON.stringify(input.measurableBotScore),
+    },
+    {
+      label: "Social source limitations",
+      severity: input.limitations.botScoreStatus === "unavailable" || !input.limitations.xApiMetricsAvailable ? "medium" : "low",
+      scoreImpact: input.limitations.botScoreStatus === "unavailable" ? 42 : 10,
+      detail: `X API metrics available ${input.limitations.xApiMetricsAvailable ? "yes" : "no"}; fake metrics generated ${input.limitations.fakeMetricsGenerated ? "yes" : "no"}; bot score ${input.limitations.botScoreStatus}.`,
+      raw: JSON.stringify(input.limitations),
+    },
     {
       label: "Official account confidence",
       severity: input.identity.confidence >= 0.75 ? "low" : input.identity.confidence >= 0.45 ? "medium" : "high",
@@ -749,8 +886,10 @@ export async function runSocialAgent(input: SocialAgentInput, providers: SocialA
   const identity = resolveOfficialIdentity(input, metadata, providerData, now);
   const text = getAllText(metadata, providerData);
   const linkSafety = getLinkSafety(input, metadata, providerData);
+  const phishingScanner = getPhishingScanner(input, metadata, providerData);
   const engagement = getEngagementRisk(providerData);
   const botShill = getBotShillSummary(providerData, now);
+  const measurableBotScore = getMeasurableBotScore(providerData, now);
   const communitySubstance = getCommunitySubstanceRisk(text);
   const negativeCommunity = getNegativeCommunityRisk(text);
   const coverage = getSourceCoverage(metadata, providerData);
@@ -765,6 +904,8 @@ export async function runSocialAgent(input: SocialAgentInput, providers: SocialA
   });
   const providerDataAvailable = Boolean(providerData?.account || providerData?.officialPosts?.length || providerData?.searchPosts?.length || providerData?.replies?.length);
   const officialPhishing = identity.confidence >= 0.45 && linkSafety.suspiciousLinks.length > 0;
+  const impersonation = getImpersonationRisk(input, identity, providerData);
+  const limitations = getSocialSourceLimitations(providerDataAvailable, measurableBotScore);
   const criticalOverride = officialPhishing || negativeCommunity.riskScore >= 82;
   const recommendedAction = getRecommendedAction(score, criticalOverride, providerDataAvailable);
   const findings = buildFindings({
@@ -773,6 +914,10 @@ export async function runSocialAgent(input: SocialAgentInput, providers: SocialA
     engagement,
     linkSafety,
     botShill,
+    measurableBotScore,
+    phishingScanner,
+    impersonation,
+    limitations,
     communitySubstance,
     negativeCommunity,
     coverage,
@@ -839,6 +984,11 @@ export async function runSocialAgent(input: SocialAgentInput, providers: SocialA
         ],
     rawSignals: {
       officialAccountConfidence: identity.confidence,
+      mandatorySocialResolver: getMandatorySocialResolverReport(input, identity),
+      impersonation,
+      phishingScanner,
+      measurableBotScore,
+      limitations,
       identity,
       account: providerData?.account,
       matchedSocialPosts: [...(providerData?.officialPosts ?? []), ...(providerData?.searchPosts ?? [])],

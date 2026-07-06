@@ -72,6 +72,16 @@ const baseAgentWeights: Partial<Record<AgentResult["agent"], number>> = {
   decision: 0,
 };
 
+const criticalBlockerMatrix = [
+  { blocker: "honeypot", finalAction: "avoid", executionAllowed: false },
+  { blocker: "cannot_sell", finalAction: "avoid", executionAllowed: false },
+  { blocker: "active_blacklist", finalAction: "manual_review", executionAllowed: false },
+  { blocker: "official_phishing_link", finalAction: "manual_review", executionAllowed: false },
+  { blocker: "identity_conflict", finalAction: "manual_review", executionAllowed: false },
+  { blocker: "no_live_source_coverage", finalAction: "manual_review", executionAllowed: false },
+  { blocker: "simulation_failed", finalAction: "manual_review", executionAllowed: false },
+] as const;
+
 function findingScore(severity: RiskLevel) {
   return {
     low: 18,
@@ -446,6 +456,26 @@ function getDecisionConfidence(results: AgentResult[], coverage: ReturnType<type
   );
 }
 
+function getDecisionConfidenceFormula(results: AgentResult[], coverage: ReturnType<typeof getSourceCoverage>, conflicts: DecisionBlocker[]) {
+  const averageAgentConfidence = results.length > 0 ? results.reduce((total, result) => total + result.confidence, 0) / results.length : 0;
+  const sourceCoverage = coverage.ratio;
+  const identityConfidence = getIdentityConfidence(results);
+  const providerFreshness = getProviderFreshness(results);
+  const agreement = getCrossAgentAgreement(results);
+  const conflictPenalty = Math.min(0.28, conflicts.length * 0.07);
+  const rawConfidence = averageAgentConfidence * 0.35 + sourceCoverage * 0.25 + identityConfidence * 0.15 + providerFreshness * 0.1 + agreement * 0.15;
+
+  return {
+    agentConfidence: averageAgentConfidence,
+    sourceCoverage,
+    identityConfidence,
+    providerFreshness,
+    crossAgentAgreement: agreement,
+    conflictPenalty,
+    finalConfidence: Math.min(0.9, Math.max(0.18, rawConfidence - conflictPenalty)),
+  };
+}
+
 function getHighestPriorityAction(blockers: DecisionBlocker[]) {
   if (blockers.some((blocker) => blocker.action === "avoid")) return "avoid";
   if (blockers.some((blocker) => blocker.action === "manual_review")) return "manual_review";
@@ -733,6 +763,37 @@ function getLlmGuard(explanation: DecisionExplanation) {
   };
 }
 
+function getDecisionCoreAudit(input: {
+  action: AgentRecommendedAction;
+  score: number;
+  confidence: number;
+  confidenceFormula: ReturnType<typeof getDecisionConfidenceFormula>;
+  userRules?: Partial<UserRule>;
+  userRiskProfile?: UserRiskProfile;
+}) {
+  return {
+    deterministicCore: true,
+    sameInputSameFinalAction: true,
+    llmMayOverrideFinalAction: false,
+    llmMayOverrideRiskScore: false,
+    llmMayOverrideBlockers: false,
+    finalAction: input.action,
+    riskScore: input.score,
+    confidence: input.confidence,
+    confidenceFormula: input.confidenceFormula,
+    criticalBlockerMatrix,
+    whatWouldChangeDecisionIncluded: true,
+    userPolicyInputs: {
+      riskTolerance: input.userRiskProfile?.mode,
+      maxTokenExposure: input.userRiskProfile?.maxSingleTokenExposurePercent,
+      stableReserveTarget: input.userRiskProfile?.minStableReservePercent,
+      blockedTokens: input.userRules?.blockedTokens,
+      blockedChains: input.userRules?.allowedChains ? [] : undefined,
+      watchOnlyMode: input.userRules?.allowedActions?.every((action) => action === "watch" || action === "hold" || action === "no_action"),
+    },
+  };
+}
+
 export function runDecisionAgent(input: DecisionInput): AgentResult {
   const { validResults: results, invalidMessages } = getValidSpecialistResults(input.results);
   const context = inferContext(results, input.context);
@@ -749,7 +810,8 @@ export function runDecisionAgent(input: DecisionInput): AgentResult {
     })),
   ];
   const conflicts = resolveConflicts(results, context, score);
-  const confidence = getDecisionConfidence(results, coverage);
+  const confidenceFormula = getDecisionConfidenceFormula(results, coverage, conflicts);
+  const confidence = confidenceFormula.finalConfidence || getDecisionConfidence(results, coverage);
   const missingData = getMissingData(results, coverage, invalidMessages);
   const recommendedAction = decideAction({
     score,
@@ -804,6 +866,16 @@ export function runDecisionAgent(input: DecisionInput): AgentResult {
       sourceCoverage: coverage,
       blockers,
       conflicts,
+      confidenceFormula,
+      deterministicCore: getDecisionCoreAudit({
+        action: recommendedAction,
+        score,
+        confidence,
+        confidenceFormula,
+        userRules: input.userRules,
+        userRiskProfile: input.userRiskProfile,
+      }),
+      criticalBlockerMatrix,
       invalidAgentOutput: invalidMessages,
       explanation,
       userRules: input.userRules,

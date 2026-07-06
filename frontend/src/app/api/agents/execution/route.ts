@@ -19,6 +19,8 @@ const bodySchema = z.object({
   slippageBps: z.number().min(0).max(10_000).optional(),
   priceImpactBps: z.number().min(0).optional(),
   gasEstimateUsd: z.number().min(0).optional(),
+  quoteAvailable: z.boolean().optional(),
+  expectedOutputAmount: z.number().min(0).optional(),
   simulationStatus: z.enum(["not_required", "pending", "passed", "failed", "unavailable"]).optional(),
   simulationRevertReason: z.string().optional(),
 });

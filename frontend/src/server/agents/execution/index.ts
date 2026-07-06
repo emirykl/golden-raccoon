@@ -15,6 +15,8 @@ type ExecutionAgentInput = {
   slippageBps?: number;
   priceImpactBps?: number;
   gasEstimateUsd?: number;
+  quoteAvailable?: boolean;
+  expectedOutputAmount?: number;
   simulationStatus?: NonNullable<TransactionPreview["simulation"]>["status"];
   simulationRevertReason?: string;
   rules?: UserRule;
@@ -75,6 +77,8 @@ function getQuotePlan(input: {
   slippageBps: number;
   priceImpactBps: number;
   gasEstimateUsd: number;
+  quoteAvailable?: boolean;
+  expectedOutputAmount?: number;
 }): NonNullable<TransactionPreview["quote"]> | undefined {
   if (!input.requiresTrade) {
     return undefined;
@@ -84,12 +88,15 @@ function getQuotePlan(input: {
     provider: "planned_dex_aggregator",
     route: [input.fromToken, input.toToken],
     expectedOutputToken: input.toToken,
+    expectedOutputAmount: input.expectedOutputAmount,
     estimatedValueUsd: input.estimatedValueUsd,
     priceImpactBps: input.priceImpactBps,
     slippageBps: input.slippageBps,
     gasEstimateUsd: input.gasEstimateUsd,
-    status: "planned",
-    detail: "DEX aggregator integration is planned; this preview does not fetch or guarantee a live quote.",
+    status: input.quoteAvailable ? "planned" : "unavailable",
+    detail: input.quoteAvailable
+      ? "DEX aggregator quote fields are present for user review."
+      : "No live quote provider result is available; this plan is not executable.",
   };
 }
 
@@ -150,7 +157,21 @@ export function buildExecutionPreview(input: ExecutionAgentInput): TransactionPr
     },
     executionPolicy,
   );
-  const blockedReason = policyStatus.violations[0];
+  const quote = getQuotePlan({
+    requiresTrade: plan.requiresTrade,
+    fromToken,
+    toToken,
+    estimatedValueUsd,
+    slippageBps,
+    priceImpactBps,
+    gasEstimateUsd,
+    quoteAvailable: input.quoteAvailable,
+    expectedOutputAmount: input.expectedOutputAmount,
+  });
+  const quoteMissing = plan.requiresTrade && quote?.status !== "planned";
+  const blockedReason = policyStatus.violations[0] ?? (quoteMissing ? "Live quote provider result is required before preparing an executable transaction." : undefined);
+  const executionReady = plan.requiresTrade && policyStatus.allowed && !quoteMissing;
+  const idempotencyKey = input.decisionId ? `${input.walletAddress ?? "unknown"}:${input.decisionId}:${action}:${fromToken}:${toToken}:${percent}` : undefined;
   const preview: TransactionPreview = {
     title: blockedReason
       ? "Transaction blocked by policy"
@@ -163,8 +184,9 @@ export function buildExecutionPreview(input: ExecutionAgentInput): TransactionPr
     percent,
     estimatedValueUsd,
     currentRiskScore,
-    projectedRiskScore: plan.requiresTrade && policyStatus.allowed ? estimateProjectedRisk(currentRiskScore, percent) : currentRiskScore,
-    requiresApproval: plan.requiresTrade && policyStatus.allowed,
+    projectedRiskScore: plan.requiresTrade && executionReady ? estimateProjectedRisk(currentRiskScore, percent) : currentRiskScore,
+    requiresApproval: executionReady,
+    executionReady,
     network: input.network ?? "GOAT Network",
     slippageBps,
     priceImpactBps,
@@ -181,18 +203,22 @@ export function buildExecutionPreview(input: ExecutionAgentInput): TransactionPr
       autoExecute: false,
     },
     policyStatus,
-    quote: getQuotePlan({
-      requiresTrade: plan.requiresTrade,
-      fromToken,
-      toToken,
-      estimatedValueUsd,
-      slippageBps,
-      priceImpactBps,
-      gasEstimateUsd,
-    }),
+    quote,
     simulation,
+    approvalRisk: {
+      infiniteApprovalWarning: plan.requiresTrade,
+      existingAllowanceCheck: plan.requiresTrade ? "required" : "not_required",
+      revokeSuggestion: plan.requiresTrade ? `Review and revoke unused ${fromToken} allowance after execution.` : undefined,
+      permitSupport: "planned",
+      permit2Support: "planned",
+    },
+    lifecycle: {
+      status: blockedReason ? "expired" : "prepared",
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      idempotencyKey,
+    },
     audit: {
-      approvalRequired: plan.requiresTrade && policyStatus.allowed,
+      approvalRequired: executionReady,
       serverCanSign: false,
       userRuleWallet: executionPolicy.walletAddress,
       userApproved: false,
@@ -256,8 +282,22 @@ export function runExecutionAgent(input: ExecutionAgentInput): AgentResult {
       },
       {
         label: "Quote provider plan",
-        severity: preview.quote ? "medium" : "low",
+        severity: preview.quote?.status === "unavailable" ? "high" : preview.quote ? "medium" : "low",
         detail: preview.quote?.detail ?? "No quote required for this action.",
+      },
+      {
+        label: "Approval risk analysis",
+        severity: preview.approvalRisk?.infiniteApprovalWarning ? "medium" : "low",
+        detail: preview.approvalRisk?.infiniteApprovalWarning
+          ? `${preview.approvalRisk.existingAllowanceCheck} allowance check. ${preview.approvalRisk.revokeSuggestion ?? ""} Permit support ${preview.approvalRisk.permitSupport}; Permit2 ${preview.approvalRisk.permit2Support}.`
+          : "No token approval risk for this non-transaction action.",
+        raw: JSON.stringify(preview.approvalRisk),
+      },
+      {
+        label: "Transaction lifecycle",
+        severity: preview.lifecycle?.status === "expired" || preview.lifecycle?.status === "failed" ? "medium" : "low",
+        detail: `Lifecycle status ${preview.lifecycle?.status ?? "prepared"}; duplicate prepare key ${preview.lifecycle?.idempotencyKey ?? "not supplied"}.`,
+        raw: JSON.stringify(preview.lifecycle),
       },
       {
         label: "Simulation plan",
@@ -290,6 +330,8 @@ export function runExecutionAgent(input: ExecutionAgentInput): AgentResult {
       policyStatus: preview.policyStatus,
       quote: preview.quote,
       simulation: preview.simulation,
+      approvalRisk: preview.approvalRisk,
+      lifecycle: preview.lifecycle,
       approvalOnly: {
         autoExecute: false,
         serverCanSign: false,

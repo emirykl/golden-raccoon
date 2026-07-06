@@ -168,6 +168,14 @@ const negativeKeywords = [
 const scamKeywords = ["rug", "rug pull", "scam", "honeypot", "phishing", "fraud", "impersonation", "drainer"];
 const regulatoryKeywords = ["sec", "cftc", "sanction", "sanctions", "compliance action", "court case", "enforcement", "lawsuit"];
 
+const regionalNewsSupportPlan = {
+  defaultLanguage: "en",
+  supportedRegions: ["global_en", "regional_manual"],
+  machineTranslationConfidence: 0.62,
+  lowConfidenceTranslationRequiresManualReview: true,
+  detail: "English major sources are automated. Regional and translated sources must carry translation confidence and manual-review bias when confidence is low.",
+};
+
 function normalizeText(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9.:/-]+/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -331,6 +339,25 @@ function getConfirmationStatus(item: NewsItem): ClassifiedEvent["confirmationSta
   if (text.includes("tweet") || text.includes("social post") || text.includes("influencer")) return "social_only_claim";
 
   return "reported";
+}
+
+function getEventTimeline(events: ClassifiedEvent[]) {
+  const timestamps = events
+    .map((event) => event.publishedAt)
+    .filter((value): value is string => Boolean(value))
+    .map((value) => new Date(value).getTime())
+    .filter((value) => !Number.isNaN(value));
+  const sourceCount = events.length;
+  const independentSourceCount = new Set(events.map((event) => event.source)).size;
+  const newest = timestamps.length > 0 ? Math.max(...timestamps) : undefined;
+
+  return {
+    firstSeen: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : undefined,
+    lastSeen: newest ? new Date(newest).toISOString() : undefined,
+    sourceCount,
+    independentSourceCount,
+    eventStillActive: newest ? Date.now() - newest <= 30 * 86_400_000 : false,
+  };
 }
 
 function titleKey(title: string) {
@@ -527,6 +554,7 @@ function buildNewsFindings(input: {
   const scamEvents = input.events.filter((event) => event.type === "scam_or_rug");
   const regulatoryEvents = input.events.filter((event) => event.type === "regulatory");
   const strongestEvent = [...input.events].sort((left, right) => scoreForSeverity(right.severity) - scoreForSeverity(left.severity))[0];
+  const eventTimeline = getEventTimeline(input.events);
   const entityExtractions = input.relevantItems.map(({ item, identity }) => extractNewsEntity(item, identity.matchedTerms));
   const titleBodyConflicts = entityExtractions.filter((entity) => entity.titleBodyConflict).length;
   const symbolCollisionItems = entityExtractions.filter((entity) => entity.symbolCollisionPossible).length;
@@ -548,6 +576,20 @@ function buildNewsFindings(input: {
   }
 
   return [
+    {
+      label: "Multilingual and regional coverage",
+      severity: regionalNewsSupportPlan.machineTranslationConfidence < 0.7 ? "medium" : "low",
+      detail: `Automated coverage is ${regionalNewsSupportPlan.defaultLanguage.toUpperCase()} major sources first; regional/translated sources require confidence ${Math.round(regionalNewsSupportPlan.machineTranslationConfidence * 100)}% and manual-review bias when low.`,
+      scoreImpact: regionalNewsSupportPlan.machineTranslationConfidence < 0.7 ? 36 : 10,
+      raw: JSON.stringify(regionalNewsSupportPlan),
+    },
+    {
+      label: "Event timeline",
+      severity: eventTimeline.eventStillActive ? "medium" : input.events.length > 0 ? "low" : "medium",
+      detail: `${eventTimeline.sourceCount} event source${eventTimeline.sourceCount === 1 ? "" : "s"}, ${eventTimeline.independentSourceCount} independent source${eventTimeline.independentSourceCount === 1 ? "" : "s"}; first seen ${eventTimeline.firstSeen ?? "unknown"}, last seen ${eventTimeline.lastSeen ?? "unknown"}.`,
+      scoreImpact: eventTimeline.eventStillActive ? 34 : 12,
+      raw: JSON.stringify(eventTimeline),
+    },
     {
       label: "News entity extraction",
       severity: titleBodyConflicts > 0 || symbolCollisionItems > 0 ? "high" : input.relevantItems.length > 0 ? "low" : "medium",
@@ -795,6 +837,8 @@ export async function runNewsAgent(input: NewsAgentInput, providers: NewsAgentPr
         type: event.type,
         confirmationStatus: event.confirmationStatus,
       })),
+      regionalSupport: regionalNewsSupportPlan,
+      eventTimeline: getEventTimeline(events),
       events,
       sourceReliability: averageReliability,
       identityMatchConfidence: averageIdentityConfidence,

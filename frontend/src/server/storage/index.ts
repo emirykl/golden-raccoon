@@ -211,6 +211,10 @@ export function listTransactionRecords(walletAddress?: string) {
     .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
 }
 
+export function getTransactionRecord(hash: string) {
+  return getTransactions().find((record) => record.hash.toLowerCase() === hash.toLowerCase());
+}
+
 export function createTransactionRecord(input: Omit<TransactionRecord, "createdAt"> & { createdAt?: string }) {
   const existingIndex = getTransactions().findIndex((record) => record.hash.toLowerCase() === input.hash.toLowerCase());
   const record: TransactionRecord = {

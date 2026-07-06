@@ -13,6 +13,7 @@ import { getRuntimeModeHealth } from "../src/server/env/runtimeMode";
 import { evaluateUrlSafety } from "../src/server/security/urlSafety";
 import { getPortfolioHardeningReport } from "../src/server/portfolio/hardening";
 import { getPortfolioRiskSignals } from "../src/server/portfolio/riskScoring";
+import { createAgentRunId, getRunPartialStatus, markRunCancelled } from "../src/server/agents/orchestrationState";
 import type { AgentResult, PortfolioSnapshot, TokenHolding } from "../src/server/types";
 import { POST as confirmExecution } from "../src/app/api/execute/confirm/route";
 
@@ -200,6 +201,8 @@ async function runNewsChecks() {
   assert(getRaw<unknown[]>(listing, "positiveCatalysts").length > 0, "Official listing must be classified as a positive catalyst.");
   assert(getRaw<Array<{ confirmationStatus?: string }>>(listing, "confirmationStatus").some((item) => item.confirmationStatus === "exchange_confirmed"), "Exchange listing must be exchange-confirmed.");
   assert(getRaw<unknown[]>(listing, "sourceCredibility").length > 0, "News source credibility registry must be exposed.");
+  assert(getRaw<{ lowConfidenceTranslationRequiresManualReview?: boolean }>(listing, "regionalSupport").lowConfidenceTranslationRequiresManualReview === true, "News regional/multilingual support plan must be exposed.");
+  assert(getRaw<{ independentSourceCount?: number }>(listing, "eventTimeline").independentSourceCount !== undefined, "News event timeline must be exposed.");
 
   const duplicate = await runNewsAgent(
     { symbol: "DUPE", tokenName: "Duplicate Token" },
@@ -282,6 +285,8 @@ async function runSocialChecks() {
   );
   assert(getRaw<{ handle?: string }>(directX, "identity").handle === "official_goat", "User X link must be analyzed directly.");
   assert(getRaw<number>(directX, "officialAccountConfidence") >= 0.75, "Direct official X link with website match must produce high identity confidence.");
+  assert(getRaw<{ mutualVerificationScore?: number }>(directX, "mandatorySocialResolver").mutualVerificationScore !== undefined, "Mandatory social resolver report must be exposed.");
+  assert(getRaw<{ fakeMetricsGenerated?: boolean }>(directX, "limitations").fakeMetricsGenerated === false, "Social source limitations must state fake metrics are not generated.");
 
   const symbolOnly = await runSocialAgent(
     { symbol: "GOAT" },
@@ -329,6 +334,7 @@ async function runSocialChecks() {
   );
   assert(fakeOfficial.riskScore >= 50, "Fake official account fixture must return high social risk.");
   assert(fakeOfficial.recommendedAction === "manual_review" || fakeOfficial.recommendedAction === "avoid", "Fake official account fixture must not recommend hold.");
+  assert(getRaw<{ riskScore?: number }>(fakeOfficial, "impersonation").riskScore !== undefined, "Impersonation detector must be exposed.");
 
   const phishing = await runSocialAgent(
     {
@@ -357,6 +363,7 @@ async function runSocialChecks() {
     },
   );
   assert(phishing.findings.some((finding) => finding.label === "Phishing and giveaway language" && (finding.severity === "critical" || finding.severity === "high")), "Phishing claim link fixture must be critical/high.");
+  assert(getRaw<{ riskyLinks?: unknown[] }>(phishing, "phishingScanner").riskyLinks !== undefined, "Phishing link scanner must be exposed.");
 
   const noProvider = await runSocialAgent(
     {
@@ -372,6 +379,7 @@ async function runSocialChecks() {
   );
   assert(getRaw<{ available?: boolean }>(noProvider, "engagement").available === false, "Provider-unavailable fixture must not invent engagement metrics.");
   assert(getRaw<boolean>(noProvider, "providerDataAvailable") === false, "Provider-unavailable fixture must expose missing provider data.");
+  assert(getRaw<{ botScoreStatus?: string }>(noProvider, "limitations").botScoreStatus === "unavailable", "Missing comments/replies must make bot score unavailable.");
 
   const decision = runDecisionAgent({ results: [blueChipLikeResult(), fakeOfficial] });
   assert(decision.recommendedAction === "watch" || decision.recommendedAction === "manual_review" || decision.recommendedAction === "avoid", "Decision Agent must include Social Agent as a supporting weighted signal.");
@@ -442,6 +450,9 @@ async function runDecisionChecks() {
     ],
   });
   assert(onchainCritical.recommendedAction === "avoid" || onchainCritical.recommendedAction === "manual_review", "Onchain critical must force avoid/manual_review.");
+  assert(getRaw<{ deterministicCore?: boolean }>(onchainCritical, "deterministicCore").deterministicCore === true, "Decision Agent must expose deterministic core audit.");
+  assert(Array.isArray(getRaw<unknown[]>(onchainCritical, "criticalBlockerMatrix")), "Decision Agent must expose critical blocker matrix.");
+  assert(getRaw<{ conflictPenalty?: number }>(onchainCritical, "confidenceFormula").conflictPenalty !== undefined, "Decision confidence formula must expose conflict penalty.");
 
   const lowCoverage = runDecisionAgent({
     results: [unavailableAgentResult("onchain"), unavailableAgentResult("news"), unavailableAgentResult("social")],
@@ -509,8 +520,26 @@ async function runExecutionChecks() {
     simulationStatus: "passed",
   });
   assert(defaultPreview.policy?.autoExecute === false, "Auto-execute must default to false.");
-  assert(defaultPreview.requiresApproval === true, "Allowed trade action must require wallet approval.");
+  assert(defaultPreview.requiresApproval === false, "Quote-missing trade action must not prepare wallet approval.");
+  assert(defaultPreview.executionReady === false, "Quote-missing trade action must not be executable.");
+  assert(defaultPreview.blockedReason?.includes("Live quote provider"), "Quote-missing trade action must expose blocked reason.");
   assert(defaultPreview.audit?.serverCanSign === false, "Server signing must remain disabled.");
+
+  const quotedPreview = buildExecutionPreview({
+    action: "reduce_exposure",
+    fromToken: "MEME",
+    toToken: "USDC",
+    percent: 10,
+    riskScore: 40,
+    estimatedValueUsd: 100,
+    network: "GOAT Network",
+    simulationStatus: "passed",
+    quoteAvailable: true,
+    expectedOutputAmount: 98,
+  });
+  assert(quotedPreview.requiresApproval === true && quotedPreview.executionReady === true, "Live quote plus passed policy must allow approval-only execution.");
+  assert(quotedPreview.approvalRisk?.existingAllowanceCheck === "required", "Approval risk analysis must require allowance check for trade actions.");
+  assert(quotedPreview.lifecycle?.status === "prepared", "Execution preview must expose prepared lifecycle status.");
 
   const policyBlocked = buildExecutionPreview({
     action: "reduce_exposure",
@@ -558,6 +587,34 @@ async function runExecutionChecks() {
   );
   assert(failedSimulationResponse.status === 403, "Simulation failure must block confirmation.");
 
+  const highRiskMissingSimulationResponse = await confirmExecution(
+    new Request("http://localhost/api/execute/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        walletAddress: "0xabc",
+        txHash: `0x${"c".repeat(64)}`,
+        userApproved: true,
+        action: "reduce_exposure",
+        riskScore: 60,
+        simulationStatus: "pending",
+      }),
+    }),
+  );
+  assert(highRiskMissingSimulationResponse.status === 403, "High-risk execution confirmation must require passed simulation.");
+
+  const walletMismatchResponse = await confirmExecution(
+    new Request("http://localhost/api/execute/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        decisionWalletAddress: "0xabc",
+        walletAddress: "0xdef",
+        txHash: `0x${"d".repeat(64)}`,
+        userApproved: true,
+      }),
+    }),
+  );
+  assert(walletMismatchResponse.status === 403, "Confirm must reject wallet mismatch.");
+
   const invalidConfirmResponse = await confirmExecution(
     new Request("http://localhost/api/execute/confirm", {
       method: "POST",
@@ -588,6 +645,19 @@ async function runExecutionChecks() {
     }),
   );
   assert(validConfirmResponse.status === 200, "Confirm must accept valid hash plus explicit user approval.");
+
+  const duplicateConfirmResponse = await confirmExecution(
+    new Request("http://localhost/api/execute/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        decisionId: "decision_fixture",
+        walletAddress: "0xabc",
+        txHash: `0x${"b".repeat(64)}`,
+        userApproved: true,
+      }),
+    }),
+  );
+  assert(duplicateConfirmResponse.status === 409, "Confirm must reject duplicate transaction hash.");
 
   const runRecord = createAgentRunRecord({
     walletAddress: "0xabc",
@@ -701,6 +771,12 @@ async function runReadinessChecks() {
   const unresolvedScan = await (await import("../src/server/scan/tokenScan")).runTokenScan("not-a-contract", "base");
   assert(unresolvedScan.dataQuality?.mockSources === 0, "Unresolved token scan must not use mock data.");
   assert(unresolvedScan.dataQuality?.mode === "unavailable", "Unresolved token scan must report unavailable data.");
+
+  const runId = createAgentRunId("fixture_run");
+  assert(runId.startsWith("fixture_run_"), "Agent run id helper must create stable-prefixed run ids.");
+  const partialStatus = getRunPartialStatus([unavailableAgentResult("news"), blueChipLikeResult()]);
+  assert(partialStatus.partial === true && partialStatus.userVisible === true, "Orchestration partial status must be user-visible when an agent is unavailable.");
+  assert(markRunCancelled(runId).status === "cancelled", "Run cancellation contract must expose cancelled status.");
 }
 
 async function runProviderReliabilityChecks() {

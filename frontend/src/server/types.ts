@@ -227,6 +227,19 @@ export type TransactionPreview = {
   priceImpactBps?: number;
   gasEstimateUsd?: number;
   approvalSteps?: string[];
+  executionReady?: boolean;
+  lifecycle?: {
+    status: "prepared" | "user_rejected" | "submitted" | "confirmed" | "failed" | "replaced" | "expired";
+    expiresAt?: string;
+    idempotencyKey?: string;
+  };
+  approvalRisk?: {
+    infiniteApprovalWarning: boolean;
+    existingAllowanceCheck: "required" | "not_required";
+    revokeSuggestion?: string;
+    permitSupport: "unsupported" | "planned";
+    permit2Support: "unsupported" | "planned";
+  };
   blockedReason?: string;
   policy?: {
     maxTradePercent: number;
@@ -342,7 +355,7 @@ export type TransactionRecord = {
   decisionAction?: AgentRecommendedAction;
   asset: string;
   valueUsd: number;
-  status: "pending" | "confirmed" | "failed";
+  status: "prepared" | "user_rejected" | "submitted" | "confirmed" | "failed" | "replaced" | "expired" | "pending";
   createdAt: string;
   network: string;
   walletAddress?: string;
