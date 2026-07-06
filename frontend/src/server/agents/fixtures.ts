@@ -64,6 +64,14 @@ export const tokenIdentityFixtures: Record<string, AgentInputIdentity> = {
     tokenName: "Fake GOAT",
     twitterUrl: "https://x.com/goat_airdrop_claim",
   },
+  newsHeavyLegitimateToken: {
+    chain: "ethereum",
+    contractAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    symbol: "USDC",
+    tokenName: "USD Coin",
+    websiteUrl: "https://www.circle.com/usdc",
+    coingeckoId: "usd-coin",
+  },
   noDataToken: {
     symbol: "UNKNOWN",
   },
@@ -172,4 +180,3 @@ export function getPortfolioFixture(name: "stableHeavy" | "highConcentration" | 
     holdings,
   };
 }
-

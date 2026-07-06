@@ -92,6 +92,8 @@ const chainConfigs: Record<string, ChainConfig> = {
   "linea-mainnet": { goPlusChainId: "59144", dexScreenerChainId: "linea", covalentChainId: "linea-mainnet" },
   optimism: { goPlusChainId: "10", dexScreenerChainId: "optimism", covalentChainId: "optimism-mainnet" },
   "optimism-mainnet": { goPlusChainId: "10", dexScreenerChainId: "optimism", covalentChainId: "optimism-mainnet" },
+  goat: { dexScreenerChainId: "goat" },
+  "goat-mainnet": { dexScreenerChainId: "goat" },
   avalanche: { goPlusChainId: "43114", dexScreenerChainId: "avalanche", covalentChainId: "avalanche-mainnet" },
   "avalanche-mainnet": { goPlusChainId: "43114", dexScreenerChainId: "avalanche", covalentChainId: "avalanche-mainnet" },
 };
@@ -497,6 +499,77 @@ function buildCreatorFindings(activity?: CreatorActivity): AgentFinding[] {
   ];
 }
 
+function getSecurityRawSignals(security?: GoPlusTokenSecurity) {
+  if (!security) {
+    return undefined;
+  }
+
+  return {
+    contractVerified: getStringField(security, "is_open_source"),
+    honeypot: getStringField(security, "is_honeypot"),
+    buyTax: getStringField(security, "buy_tax"),
+    sellTax: getStringField(security, "sell_tax"),
+    mintable: getStringField(security, "is_mintable"),
+    pausable: getStringField(security, "transfer_pausable"),
+    blacklist: getStringField(security, "is_blacklisted"),
+    whitelist: getStringField(security, "is_whitelisted"),
+    proxy: getStringField(security, "is_proxy"),
+    hiddenOwner: getStringField(security, "hidden_owner"),
+    ownerCanChangeBalance: getStringField(security, "owner_change_balance"),
+    creatorAddress: getCreatorAddress(security),
+    ownerAddress: getOwnerAddress(security),
+    creatorPercent: parsePercent(getStringField(security, "creator_percent")),
+    ownerPercent: parsePercent(getStringField(security, "owner_percent")),
+  };
+}
+
+function getMarketRawSignals(pairs?: DexScreenerPair[]) {
+  const bestPair = getBestPair(pairs);
+
+  if (!bestPair) {
+    return {
+      pairCount: pairs?.length ?? 0,
+    };
+  }
+
+  return {
+    pairCount: pairs?.length ?? 0,
+    bestPair: {
+      chainId: bestPair.chainId,
+      dexId: bestPair.dexId,
+      pairAddress: bestPair.pairAddress,
+      pairUrl: bestPair.url,
+      liquidityUsd: bestPair.liquidity?.usd ?? 0,
+      volume24hUsd: bestPair.volume?.h24 ?? 0,
+      fdvUsd: bestPair.fdv,
+      marketCapUsd: bestPair.marketCap,
+      priceChange24hPercent: bestPair.priceChange?.h24,
+      pairAgeDays: bestPair.pairCreatedAt ? Math.floor((Date.now() - bestPair.pairCreatedAt) / 86_400_000) : undefined,
+    },
+  };
+}
+
+function getHolderRawSignals(security?: GoPlusTokenSecurity) {
+  const holders = getArrayField<TokenHolder>(security, "holders")
+    .map((holder) => ({
+      ...holder,
+      percent: getHolderPercent(holder),
+    }))
+    .filter((holder): holder is TokenHolder & { percent: number } => typeof holder.percent === "number")
+    .sort((a, b) => b.percent - a.percent);
+  const unlockedHolders = holders.filter((holder) => !isLockedOrContractHolder(holder));
+  const concentrationSet = unlockedHolders.length > 0 ? unlockedHolders : holders;
+
+  return {
+    holderCount: holders.length,
+    unlockedHolderCount: unlockedHolders.length,
+    topHolderPercent: concentrationSet[0]?.percent ?? 0,
+    top5Percent: concentrationSet.slice(0, 5).reduce((total, holder) => total + holder.percent, 0),
+    top10Percent: concentrationSet.slice(0, 10).reduce((total, holder) => total + holder.percent, 0),
+    lockedOrContractHolderCount: holders.length - unlockedHolders.length,
+  };
+}
+
 function scoreFindings(findings: AgentFinding[]) {
   const severityScore = {
     low: 18,
@@ -598,11 +671,14 @@ export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentRe
     ...buildCreatorFindings(creatorActivity),
   ];
   const score = scoreFindings(findings);
+  const checkedAt = new Date().toISOString();
   const sources: AgentSource[] = [
     {
       label: "GoPlus token security",
       status: security ? "connected" : "unavailable",
       detail: security ? "Contract permission and honeypot flags returned." : "GoPlus data unavailable for this request.",
+      checkedAt,
+      reliability: security ? 0.84 : 0.12,
     },
     {
       label: "Holder distribution",
@@ -611,11 +687,15 @@ export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentRe
         getArrayField<TokenHolder>(security, "holders").length > 0
           ? "Top holder distribution returned by security provider."
           : "Holder distribution unavailable for this request.",
+      checkedAt,
+      reliability: getArrayField<TokenHolder>(security, "holders").length > 0 ? 0.76 : 0.14,
     },
     {
       label: "DexScreener token pairs",
       status: pairs ? "connected" : "unavailable",
       detail: pairs ? `${pairs.length} pair${pairs.length === 1 ? "" : "s"} returned.` : "DEX pair data unavailable for this request.",
+      checkedAt,
+      reliability: pairs ? 0.78 : 0.12,
     },
     {
       label: "Creator transfer history",
@@ -623,6 +703,8 @@ export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentRe
       detail: creatorActivity?.checked
         ? "Creator wallet transfer sample returned from GoldRush/Covalent."
         : "Creator sell check requires creator address plus GoldRush/Covalent transfer history.",
+      checkedAt,
+      reliability: creatorActivity?.checked ? 0.7 : 0.14,
     },
   ];
 
@@ -635,5 +717,17 @@ export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentRe
     sources,
     confidence: security && pairs ? 0.74 : security || pairs ? 0.52 : 0.3,
     recommendedAction: score >= 75 ? "avoid" : score >= 50 ? "manual_review" : score >= 25 ? "watch" : "hold",
+    rawSignals: {
+      chainSupport: {
+        requestedChain: chain,
+        goPlusChainId: chainConfig.goPlusChainId,
+        dexScreenerChainId: chainConfig.dexScreenerChainId,
+        covalentChainId: chainConfig.covalentChainId,
+      },
+      security: getSecurityRawSignals(security),
+      market: getMarketRawSignals(pairs),
+      holders: getHolderRawSignals(security),
+      creator: creatorActivity,
+    },
   });
 }
