@@ -99,6 +99,17 @@ type CovalentTransferResponse = {
   };
 };
 
+type OnchainAgentProviders = {
+  fetchSecurity?: (chainId: string, contractAddress: string) => Promise<GoPlusTokenSecurity | undefined>;
+  fetchPairs?: (chainId: string, contractAddress: string) => Promise<DexScreenerPair[] | undefined>;
+  fetchCreatorActivity?: (
+    chainConfig: ChainConfig,
+    security: GoPlusTokenSecurity | undefined,
+    contractAddress: string,
+    pairs: DexScreenerPair[] | undefined,
+  ) => Promise<CreatorActivity | undefined>;
+};
+
 const chainConfigs: Record<string, ChainConfig> = {
   ethereum: { goPlusChainId: "1", dexScreenerChainId: "ethereum", covalentChainId: "eth-mainnet" },
   eth: { goPlusChainId: "1", dexScreenerChainId: "ethereum", covalentChainId: "eth-mainnet" },
@@ -764,7 +775,7 @@ function getOnchainScoreBreakdown(findings: AgentFinding[], sources: AgentSource
   const holderConcentration = averageSeverity(findings, ["holder"]);
   const creatorBehavior = averageSeverity(findings, ["creator"]);
   const marketAnomaly = averageSeverity(findings, ["volume/liquidity", "fdv", "new pair", "market anomaly", "pair age"]);
-  const finalScore = Math.round(
+  const baseFinalScore = Math.round(
     contractSecurity * 0.4 +
       liquidityExit * 0.2 +
       holderConcentration * 0.15 +
@@ -772,6 +783,20 @@ function getOnchainScoreBreakdown(findings: AgentFinding[], sources: AgentSource
       marketAnomaly * 0.1 +
       sourceQuality * 0.05,
   );
+  const hasCriticalContractBlocker = findings.some((finding) => {
+    const label = finding.label.toLowerCase();
+
+    return finding.severity === "critical" && (label.includes("critical contract") || label.includes("transaction simulation"));
+  });
+  const hasLowLiquidity = findings.some((finding) => finding.label === "Liquidity" && finding.severity === "high");
+  const hasNoLiquidity = findings.some((finding) => finding.label === "Liquidity" && finding.detail.includes("No DexScreener pairs"));
+  const finalScore = hasCriticalContractBlocker
+    ? Math.max(baseFinalScore, 82)
+    : hasNoLiquidity
+      ? Math.max(baseFinalScore, 62)
+      : hasLowLiquidity
+        ? Math.max(baseFinalScore, 52)
+        : baseFinalScore;
 
   return {
     contractSecurity,
@@ -843,7 +868,7 @@ function buildOutputSummaryFindings(scoreBreakdown: OnchainScoreBreakdown, block
   ];
 }
 
-export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentResult> {
+export async function runOnchainAgent(input: OnchainAgentInput, providers: OnchainAgentProviders = {}): Promise<AgentResult> {
   const chain = normalizeChain(input.chain);
   const contractAddress = input.contractAddress?.trim();
   const chainConfig = chainConfigs[chain];
@@ -887,12 +912,16 @@ export async function runOnchainAgent(input: OnchainAgentInput): Promise<AgentRe
   }
 
   const [securityResult, pairsResult] = await Promise.allSettled([
-    chainConfig.goPlusChainId ? fetchGoPlusSecurity(chainConfig.goPlusChainId, contractAddress) : Promise.resolve(undefined),
-    fetchDexScreenerPairs(chainConfig.dexScreenerChainId, contractAddress),
+    chainConfig.goPlusChainId
+      ? (providers.fetchSecurity ?? fetchGoPlusSecurity)(chainConfig.goPlusChainId, contractAddress)
+      : Promise.resolve(undefined),
+    (providers.fetchPairs ?? fetchDexScreenerPairs)(chainConfig.dexScreenerChainId, contractAddress),
   ]);
   const security = securityResult.status === "fulfilled" ? securityResult.value : undefined;
   const pairs = pairsResult.status === "fulfilled" ? pairsResult.value : undefined;
-  const creatorActivity = await fetchCreatorActivity(chainConfig, security, contractAddress, pairs).catch(() => undefined);
+  const creatorActivity = await (providers.fetchCreatorActivity ?? fetchCreatorActivity)(chainConfig, security, contractAddress, pairs).catch(
+    () => undefined,
+  );
   const simulationSignals = getSimulationSignals(security, pairs);
   const findings = [
     ...buildSecurityFindings(security),

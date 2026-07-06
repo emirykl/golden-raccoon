@@ -1,16 +1,26 @@
 import type { AgentFinding, AgentResult, AgentSource, RiskLevel } from "@/server/types";
-import { buildAgentResult } from "@/server/agents/shared";
+import { buildAgentResult, clampScore } from "@/server/agents/shared";
 
 type NewsAgentInput = {
   tokenName?: string;
   symbol?: string;
   contractAddress?: string;
+  projectName?: string;
+  websiteUrl?: string;
+  chain?: string;
 };
+
+type NewsSourceTier = 1 | 2 | 3 | 4;
+
+type NewsSourceKind = "major_news" | "official_project" | "exchange_announcement" | "security_incident" | "aggregator";
 
 type NewsFeed = {
   label: string;
   url: string;
   reliability: number;
+  tier: NewsSourceTier;
+  kind: NewsSourceKind;
+  rssUrl?: string;
 };
 
 type NewsItem = {
@@ -19,60 +29,157 @@ type NewsItem = {
   description?: string;
   publishedAt?: Date;
   source: string;
+  sourceTier: NewsSourceTier;
+  sourceKind: NewsSourceKind;
   reliability: number;
 };
 
-const newsFeeds: NewsFeed[] = [
+type EventType = "positive_catalyst" | "negative_catalyst" | "scam_or_rug" | "regulatory";
+
+type ClassifiedEvent = {
+  type: EventType;
+  label: string;
+  severity: RiskLevel;
+  source: string;
+  title: string;
+  url?: string;
+  publishedAt?: string;
+  reliability: number;
+  identityConfidence: number;
+  recencyWeight: number;
+};
+
+type IdentityTerm = {
+  value: string;
+  label: string;
+  strength: "weak" | "medium" | "high";
+};
+
+type NewsAgentProviders = {
+  feeds?: NewsFeed[];
+  fetchFeed?: (feed: NewsFeed) => Promise<NewsItem[]>;
+  now?: Date;
+};
+
+const sourceTierReliability: Record<NewsSourceTier, number> = {
+  1: 0.86,
+  2: 0.78,
+  3: 0.58,
+  4: 0.32,
+};
+
+const newsSourceRegistry: NewsFeed[] = [
   {
     label: "CoinDesk",
-    url: "https://www.coindesk.com/arc/outboundfeeds/rss/",
-    reliability: 0.86,
+    url: "https://www.coindesk.com",
+    rssUrl: "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    reliability: sourceTierReliability[1],
+    tier: 1,
+    kind: "major_news",
   },
   {
     label: "Cointelegraph",
-    url: "https://cointelegraph.com/rss",
+    url: "https://cointelegraph.com",
+    rssUrl: "https://cointelegraph.com/rss",
     reliability: 0.78,
+    tier: 1,
+    kind: "major_news",
   },
   {
     label: "The Block",
-    url: "https://www.theblock.co/rss.xml",
+    url: "https://www.theblock.co",
+    rssUrl: "https://www.theblock.co/rss.xml",
     reliability: 0.82,
+    tier: 1,
+    kind: "major_news",
+  },
+  {
+    label: "Decrypt",
+    url: "https://decrypt.co",
+    rssUrl: "https://decrypt.co/feed",
+    reliability: 0.74,
+    tier: 1,
+    kind: "major_news",
+  },
+  {
+    label: "Binance Announcements",
+    url: "https://www.binance.com/en/support/announcement",
+    reliability: sourceTierReliability[2],
+    tier: 2,
+    kind: "exchange_announcement",
+  },
+  {
+    label: "Coinbase Assets",
+    url: "https://www.coinbase.com/blog/landing/product",
+    reliability: sourceTierReliability[2],
+    tier: 2,
+    kind: "exchange_announcement",
+  },
+  {
+    label: "Rekt News",
+    url: "https://rekt.news",
+    rssUrl: "https://rekt.news/rss/",
+    reliability: 0.72,
+    tier: 2,
+    kind: "security_incident",
+  },
+  {
+    label: "Security Alliance",
+    url: "https://securityalliance.org",
+    reliability: sourceTierReliability[2],
+    tier: 2,
+    kind: "security_incident",
   },
 ];
 
 const positiveKeywords = [
   "listing",
   "listed",
+  "major exchange",
+  "coinbase adds",
+  "binance will list",
   "partnership",
+  "partners with",
   "integrates",
   "integration",
   "funding",
   "raises",
-  "launch",
   "mainnet",
-  "airdrop",
-  "etf",
-  "approval",
+  "audit completed",
+  "support for",
 ];
 
 const negativeKeywords = [
   "hack",
   "exploit",
   "drain",
+  "drained",
   "stolen",
   "lawsuit",
-  "charged",
-  "arrest",
-  "probe",
   "investigation",
-  "halt",
+  "delisting",
   "delist",
-  "bankrupt",
+  "bankruptcy",
+  "halt",
+  "security warning",
 ];
 
-const scamKeywords = ["rug", "scam", "honeypot", "phishing", "fraud", "ponzi", "fake", "impersonation"];
-const regulatoryKeywords = ["sec", "cftc", "regulator", "regulatory", "sanction", "compliance", "lawsuit"];
-const exchangeKeywords = ["binance", "coinbase", "kraken", "okx", "bybit", "upbit", "listing", "delist"];
+const scamKeywords = ["rug", "rug pull", "scam", "honeypot", "phishing", "fraud", "impersonation", "drainer"];
+const regulatoryKeywords = ["sec", "cftc", "sanction", "sanctions", "compliance action", "court case", "enforcement", "lawsuit"];
+
+function normalizeText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9.:/-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function getDomain(url?: string) {
+  if (!url) return undefined;
+
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
 
 function decodeXml(value: string) {
   return value
@@ -100,42 +207,38 @@ function parseFeedItems(xml: string, feed: NewsFeed): NewsItem[] {
   const itemBlocks = Array.from(xml.matchAll(/<item\b[\s\S]*?<\/item>/gi), (match) => match[0]);
   const entryBlocks = itemBlocks.length > 0 ? itemBlocks : Array.from(xml.matchAll(/<entry\b[\s\S]*?<\/entry>/gi), (match) => match[0]);
 
-  return entryBlocks
-    .flatMap((itemXml) => {
-      const title = extractTag(itemXml, "title");
-      const description = extractTag(itemXml, "description") ?? extractTag(itemXml, "summary") ?? extractTag(itemXml, "content");
-      const link = extractTag(itemXml, "link") ?? itemXml.match(/<link[^>]*href="([^"]+)"/i)?.[1];
-      const pubDate = extractTag(itemXml, "pubDate") ?? extractTag(itemXml, "published") ?? extractTag(itemXml, "updated");
-      const publishedAt = pubDate ? new Date(pubDate) : undefined;
+  return entryBlocks.flatMap((itemXml) => {
+    const title = extractTag(itemXml, "title");
+    const description = extractTag(itemXml, "description") ?? extractTag(itemXml, "summary") ?? extractTag(itemXml, "content");
+    const link = extractTag(itemXml, "link") ?? itemXml.match(/<link[^>]*href="([^"]+)"/i)?.[1];
+    const pubDate = extractTag(itemXml, "pubDate") ?? extractTag(itemXml, "published") ?? extractTag(itemXml, "updated");
+    const publishedAt = pubDate ? new Date(pubDate) : undefined;
 
-      if (!title) {
-        return [];
-      }
+    if (!title) {
+      return [];
+    }
 
-      const item: NewsItem = {
+    return [
+      {
         title,
+        link,
+        description,
+        publishedAt: publishedAt && !Number.isNaN(publishedAt.getTime()) ? publishedAt : undefined,
         source: feed.label,
+        sourceTier: feed.tier,
+        sourceKind: feed.kind,
         reliability: feed.reliability,
-      };
-
-      if (link) {
-        item.link = link;
-      }
-
-      if (description) {
-        item.description = description;
-      }
-
-      if (publishedAt && !Number.isNaN(publishedAt.getTime())) {
-        item.publishedAt = publishedAt;
-      }
-
-      return [item];
-    });
+      },
+    ];
+  });
 }
 
 async function fetchFeed(feed: NewsFeed): Promise<NewsItem[]> {
-  const response = await fetch(feed.url, {
+  if (!feed.rssUrl) {
+    throw new Error(`${feed.label} has no RSS endpoint configured for automated MVP checks`);
+  }
+
+  const response = await fetch(feed.rssUrl, {
     headers: {
       Accept: "application/rss+xml, application/xml, text/xml",
     },
@@ -149,147 +252,339 @@ async function fetchFeed(feed: NewsFeed): Promise<NewsItem[]> {
   return parseFeedItems(await response.text(), feed);
 }
 
-function getSearchTerms(input: NewsAgentInput) {
-  return [input.symbol, input.tokenName, input.contractAddress]
-    .filter((term): term is string => Boolean(term?.trim()))
-    .map((term) => term.trim().toLowerCase());
+function getIdentityTerms(input: NewsAgentInput): IdentityTerm[] {
+  const websiteDomain = getDomain(input.websiteUrl);
+  const terms: IdentityTerm[] = [];
+
+  if (input.contractAddress?.trim()) terms.push({ value: input.contractAddress.trim().toLowerCase(), label: "contract address", strength: "high" });
+  if (websiteDomain) terms.push({ value: websiteDomain, label: "website domain", strength: "high" });
+  if (input.tokenName?.trim()) terms.push({ value: input.tokenName.trim().toLowerCase(), label: "token name", strength: "medium" });
+  if (input.projectName?.trim()) terms.push({ value: input.projectName.trim().toLowerCase(), label: "project name", strength: "medium" });
+  if (input.symbol?.trim()) terms.push({ value: input.symbol.trim().toLowerCase(), label: "symbol", strength: "weak" });
+  if (input.chain?.trim()) terms.push({ value: input.chain.trim().toLowerCase(), label: "chain", strength: "weak" });
+
+  return terms;
 }
 
 function itemText(item: NewsItem) {
-  return `${item.title} ${item.description ?? ""}`.toLowerCase();
+  return normalizeText(`${item.title} ${item.description ?? ""} ${item.link ?? ""}`);
 }
 
 function containsAny(text: string, keywords: string[]) {
   return keywords.some((keyword) => text.includes(keyword));
 }
 
+function getIdentityMatch(item: NewsItem, terms: IdentityTerm[]) {
+  const text = itemText(item);
+  const matchedTerms = terms.filter((term) => text.includes(term.value));
+  const hasHigh = matchedTerms.some((term) => term.strength === "high");
+  const hasMedium = matchedTerms.some((term) => term.strength === "medium");
+  const hasWeak = matchedTerms.some((term) => term.strength === "weak");
+  const confidence = hasHigh ? 0.92 : hasMedium && hasWeak ? 0.68 : hasMedium ? 0.52 : hasWeak ? 0.28 : 0;
+
+  return {
+    matchedTerms,
+    confidence,
+  };
+}
+
+function titleKey(title: string) {
+  return normalizeText(title).replace(/\b(the|a|an|to|for|of|and|in|on)\b/g, "").replace(/\s+/g, " ").trim();
+}
+
 function dedupeItems(items: NewsItem[]) {
   const seen = new Set<string>();
 
   return items.filter((item) => {
-    const key = (item.link || item.title).toLowerCase();
+    const urlKey = item.link ? `url:${item.link.toLowerCase().split("?")[0]}` : undefined;
+    const itemTitleKey = `title:${titleKey(item.title)}`;
+    const key = urlKey ?? itemTitleKey;
 
-    if (seen.has(key)) {
+    if (seen.has(key) || seen.has(itemTitleKey)) {
       return false;
     }
 
     seen.add(key);
+    seen.add(itemTitleKey);
     return true;
   });
 }
 
-function filterRelevantItems(items: NewsItem[], terms: string[]) {
-  const now = Date.now();
-  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+function getRecencyWeight(item: NewsItem, now: Date) {
+  if (!item.publishedAt) return 0.65;
 
-  return dedupeItems(items)
-    .filter((item) => {
-      const text = itemText(item);
-      const isRecent = !item.publishedAt || now - item.publishedAt.getTime() <= sevenDaysMs;
+  const ageDays = Math.max(0, (now.getTime() - item.publishedAt.getTime()) / 86_400_000);
 
-      return isRecent && terms.some((term) => text.includes(term));
-    })
-    .sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0))
-    .slice(0, 12);
+  if (ageDays <= 1) return 1;
+  if (ageDays <= 7) return 0.78;
+  if (ageDays <= 30) return 0.42;
+
+  return 0;
 }
 
-function severityFromCount(count: number, mediumAt: number, highAt: number): RiskLevel {
-  if (count >= highAt) return "high";
-  if (count >= mediumAt) return "medium";
+function filterRelevantItems(items: NewsItem[], terms: IdentityTerm[], now: Date) {
+  return dedupeItems(items)
+    .map((item) => {
+      const identity = getIdentityMatch(item, terms);
+      const recencyWeight = getRecencyWeight(item, now);
+
+      return { item, identity, recencyWeight };
+    })
+    .filter(({ identity, recencyWeight }) => identity.confidence > 0 && recencyWeight > 0)
+    .sort((a, b) => {
+      const confidenceGap = b.identity.confidence - a.identity.confidence;
+
+      return confidenceGap !== 0 ? confidenceGap : (b.item.publishedAt?.getTime() ?? 0) - (a.item.publishedAt?.getTime() ?? 0);
+    })
+    .slice(0, 16);
+}
+
+function severityFromEvent(type: EventType, item: NewsItem) {
+  const text = itemText(item);
+  const officialOrSecurity = item.sourceKind === "exchange_announcement" || item.sourceKind === "security_incident";
+
+  if (type === "scam_or_rug") return text.includes("phishing") || text.includes("drainer") || text.includes("rug") ? "critical" : "high";
+  if (type === "negative_catalyst") return text.includes("hack") || text.includes("exploit") || text.includes("delisting") || officialOrSecurity ? "high" : "medium";
+  if (type === "regulatory") return officialOrSecurity || text.includes("enforcement") || text.includes("sanction") ? "high" : "medium";
+
   return "low";
 }
 
-function buildNewsFindings(items: NewsItem[]): AgentFinding[] {
-  if (items.length === 0) {
+function classifyEvents(relevantItems: ReturnType<typeof filterRelevantItems>): ClassifiedEvent[] {
+  return relevantItems.flatMap(({ item, identity, recencyWeight }) => {
+    const text = itemText(item);
+    const events: Array<{ type: EventType; label: string }> = [];
+
+    if (containsAny(text, positiveKeywords)) events.push({ type: "positive_catalyst", label: "Positive catalyst" });
+    if (containsAny(text, negativeKeywords)) events.push({ type: "negative_catalyst", label: "Negative catalyst" });
+    if (containsAny(text, scamKeywords)) events.push({ type: "scam_or_rug", label: "Scam/rug mention" });
+    if (containsAny(text, regulatoryKeywords)) events.push({ type: "regulatory", label: "Regulatory mention" });
+
+    return events.map((event) => ({
+      ...event,
+      severity: severityFromEvent(event.type, item),
+      source: item.source,
+      title: item.title,
+      url: item.link,
+      publishedAt: item.publishedAt?.toISOString(),
+      reliability: item.reliability,
+      identityConfidence: identity.confidence,
+      recencyWeight,
+    }));
+  });
+}
+
+function scoreForSeverity(severity: RiskLevel) {
+  return {
+    low: 12,
+    medium: 42,
+    high: 72,
+    critical: 94,
+  }[severity];
+}
+
+function average(values: number[]) {
+  return values.length > 0 ? values.reduce((total, value) => total + value, 0) / values.length : 0;
+}
+
+function severityForScore(score: number): RiskLevel {
+  if (score >= 75) return "critical";
+  if (score >= 50) return "high";
+  if (score >= 25) return "medium";
+
+  return "low";
+}
+
+function getEventScore(events: ClassifiedEvent[], types: EventType[]) {
+  const matched = events.filter((event) => types.includes(event.type));
+
+  if (matched.length === 0) return 0;
+
+  return clampScore(
+    matched.reduce((total, event) => total + scoreForSeverity(event.severity) * event.recencyWeight, 0) / matched.length,
+  );
+}
+
+function getCoverageScore(connectedSourceCount: number, relevantItemCount: number) {
+  if (connectedSourceCount === 0) return 85;
+  if (relevantItemCount === 0) return 45;
+  if (connectedSourceCount >= 3) return 8;
+
+  return 22;
+}
+
+function getIdentityRisk(identityConfidence: number) {
+  if (identityConfidence >= 0.75) return 8;
+  if (identityConfidence >= 0.45) return 28;
+  if (identityConfidence > 0) return 64;
+
+  return 70;
+}
+
+function getSourceReliabilityRisk(reliability: number) {
+  if (reliability >= 0.8) return 8;
+  if (reliability >= 0.6) return 24;
+  if (reliability > 0) return 55;
+
+  return 72;
+}
+
+function getRecencyRisk(recencyWeight: number) {
+  if (recencyWeight >= 0.78) return 10;
+  if (recencyWeight >= 0.42) return 34;
+  if (recencyWeight > 0) return 50;
+
+  return 58;
+}
+
+function getNewsScore(input: {
+  events: ClassifiedEvent[];
+  connectedSourceCount: number;
+  relevantItemCount: number;
+  averageReliability: number;
+  averageIdentityConfidence: number;
+  averageRecencyWeight: number;
+  independentSourceCount: number;
+}) {
+  const negativeSecurityScore = getEventScore(input.events, ["negative_catalyst"]);
+  const scamRegulatoryScore = getEventScore(input.events, ["scam_or_rug", "regulatory"]);
+  const sourceReliabilityRisk = getSourceReliabilityRisk(input.averageReliability);
+  const identityRisk = getIdentityRisk(input.averageIdentityConfidence);
+  const recencyRisk = getRecencyRisk(input.averageRecencyWeight);
+  const sourceCoverageRisk = getCoverageScore(input.connectedSourceCount, input.relevantItemCount);
+  const positiveCatalystCount = input.events.filter((event) => event.type === "positive_catalyst").length;
+  const positiveOffset = Math.min(12, positiveCatalystCount * 4);
+  const independentSourceRisk = input.independentSourceCount >= 3 ? 8 : input.independentSourceCount >= 2 ? 22 : input.independentSourceCount === 1 ? 42 : 62;
+  const baseScore =
+    negativeSecurityScore * 0.3 +
+    scamRegulatoryScore * 0.2 +
+    sourceReliabilityRisk * 0.15 +
+    identityRisk * 0.15 +
+    recencyRisk * 0.1 +
+    independentSourceRisk * 0.05 +
+    sourceCoverageRisk * 0.05;
+
+  return clampScore(baseScore - positiveOffset);
+}
+
+function buildNewsFindings(input: {
+  relevantItems: ReturnType<typeof filterRelevantItems>;
+  events: ClassifiedEvent[];
+  connectedSourceCount: number;
+  averageReliability: number;
+  averageIdentityConfidence: number;
+  averageRecencyWeight: number;
+  score: number;
+}): AgentFinding[] {
+  const positiveEvents = input.events.filter((event) => event.type === "positive_catalyst");
+  const negativeEvents = input.events.filter((event) => event.type === "negative_catalyst");
+  const scamEvents = input.events.filter((event) => event.type === "scam_or_rug");
+  const regulatoryEvents = input.events.filter((event) => event.type === "regulatory");
+  const strongestEvent = [...input.events].sort((left, right) => scoreForSeverity(right.severity) - scoreForSeverity(left.severity))[0];
+
+  if (input.connectedSourceCount === 0) {
     return [
       {
-        label: "News coverage",
+        label: "News source coverage",
         severity: "medium",
-        detail: "No recent matching RSS coverage found. Thin coverage can be normal for new tokens but requires manual review.",
+        detail: "No configured news source was reachable. News Agent cannot produce a safe signal from unavailable data.",
+        scoreImpact: 58,
+        interpretation: "Decision Agent should treat this as missing coverage and require manual review.",
       },
     ];
   }
 
-  const texts = items.map(itemText);
-  const positiveCount = texts.filter((text) => containsAny(text, positiveKeywords)).length;
-  const negativeCount = texts.filter((text) => containsAny(text, negativeKeywords)).length;
-  const scamCount = texts.filter((text) => containsAny(text, scamKeywords)).length;
-  const regulatoryCount = texts.filter((text) => containsAny(text, regulatoryKeywords)).length;
-  const exchangeCount = texts.filter((text) => containsAny(text, exchangeKeywords)).length;
-  const averageReliability = items.reduce((total, item) => total + item.reliability, 0) / items.length;
-
   return [
     {
-      label: "Positive catalysts",
-      severity: positiveCount > 0 ? "low" : "medium",
-      detail: `${positiveCount} recent matching item${positiveCount === 1 ? "" : "s"} mention positive catalysts such as listing, funding, launch or partnership.`,
+      label: "Matched articles",
+      severity: input.relevantItems.length > 0 ? "low" : "medium",
+      detail:
+        input.relevantItems.length > 0
+          ? `${input.relevantItems.length} deduped article${input.relevantItems.length === 1 ? "" : "s"} matched token identity within the 30-day recency window.`
+          : "No matching article was found in connected sources. This is not proof that the token is safe.",
+      scoreImpact: input.relevantItems.length > 0 ? 8 : 45,
     },
     {
       label: "Negative catalysts",
-      severity: severityFromCount(negativeCount, 1, 3),
-      detail: `${negativeCount} recent matching item${negativeCount === 1 ? "" : "s"} include negative terms such as hack, exploit, lawsuit, delist or bankruptcy.`,
+      severity: severityForScore(getEventScore(input.events, ["negative_catalyst"])),
+      detail: `${negativeEvents.length} matched event${negativeEvents.length === 1 ? "" : "s"} mention hack, exploit, lawsuit, delisting, halt or security warning language.`,
+      scoreImpact: getEventScore(input.events, ["negative_catalyst"]),
     },
     {
-      label: "Scam or rug mentions",
-      severity: severityFromCount(scamCount, 1, 2),
-      detail: `${scamCount} recent matching item${scamCount === 1 ? "" : "s"} mention scam/rug/phishing/fraud language.`,
+      label: "Scam or rug events",
+      severity: severityForScore(getEventScore(input.events, ["scam_or_rug"])),
+      detail: `${scamEvents.length} matched event${scamEvents.length === 1 ? "" : "s"} mention scam, rug, phishing, fraud, impersonation, honeypot or drainer language.`,
+      scoreImpact: getEventScore(input.events, ["scam_or_rug"]),
     },
     {
-      label: "Regulatory mentions",
-      severity: severityFromCount(regulatoryCount, 2, 4),
-      detail: `${regulatoryCount} recent matching item${regulatoryCount === 1 ? "" : "s"} mention regulator, SEC/CFTC, sanctions, compliance or lawsuit terms.`,
+      label: "Regulatory events",
+      severity: severityForScore(getEventScore(input.events, ["regulatory"])),
+      detail: `${regulatoryEvents.length} matched event${regulatoryEvents.length === 1 ? "" : "s"} mention SEC/CFTC, sanctions, enforcement, compliance action or court case language.`,
+      scoreImpact: getEventScore(input.events, ["regulatory"]),
     },
     {
-      label: "Exchange mentions",
-      severity: exchangeCount > 0 ? "low" : "medium",
-      detail: `${exchangeCount} recent matching item${exchangeCount === 1 ? "" : "s"} mention major exchanges or listing/delist terms.`,
+      label: "Positive catalysts",
+      severity: "low",
+      detail: `${positiveEvents.length} matched event${positiveEvents.length === 1 ? "" : "s"} mention listing, exchange support, mainnet, funding, partnership, integration or completed audit language. Positive catalysts reduce but never erase risk.`,
+      scoreImpact: Math.max(0, 20 - positiveEvents.length * 4),
     },
     {
       label: "Source reliability",
-      severity: averageReliability >= 0.8 ? "low" : "medium",
-      detail: `Average matched-source reliability is ${Math.round(averageReliability * 100)}%.`,
+      severity: input.averageReliability >= 0.8 ? "low" : input.averageReliability >= 0.6 ? "medium" : "high",
+      detail: `Average matched-source reliability is ${Math.round(input.averageReliability * 100)}% using tiered source scoring.`,
+      scoreImpact: getSourceReliabilityRisk(input.averageReliability),
+    },
+    {
+      label: "Identity match confidence",
+      severity: input.averageIdentityConfidence >= 0.75 ? "low" : input.averageIdentityConfidence >= 0.45 ? "medium" : "high",
+      detail: `Average identity match confidence is ${Math.round(input.averageIdentityConfidence * 100)}%. Symbol-only matches remain low confidence.`,
+      scoreImpact: getIdentityRisk(input.averageIdentityConfidence),
+    },
+    {
+      label: "Event severity",
+      severity: strongestEvent?.severity ?? "low",
+      detail: strongestEvent
+        ? `Strongest event is ${strongestEvent.label.toLowerCase()} from ${strongestEvent.source}: ${strongestEvent.title}.`
+        : "No classified news event was found in matched articles.",
+      scoreImpact: strongestEvent ? scoreForSeverity(strongestEvent.severity) : 0,
+    },
+    {
+      label: "News risk formula",
+      severity: severityForScore(input.score),
+      detail: "Score uses negative/security events, scam/regulatory mentions, source reliability, identity confidence, recency, independent source count and positive catalyst offset.",
+      scoreImpact: input.score,
     },
   ];
 }
 
-function scoreNewsRisk(findings: AgentFinding[]) {
-  const severityScore = {
-    low: 18,
-    medium: 48,
-    high: 78,
-    critical: 94,
-  };
-  const weighted = findings.reduce(
-    (total, finding) => {
-      const label = finding.label.toLowerCase();
-      const weight = label.includes("scam") || label.includes("negative") ? 1.5 : label.includes("regulatory") ? 1.2 : 1;
+function getRecommendedAction(score: number, connectedSourceCount: number, identityConfidence: number) {
+  if (connectedSourceCount === 0) return "manual_review";
+  if (score >= 75) return "manual_review";
+  if (score >= 50) return "manual_review";
+  if (identityConfidence < 0.35) return "manual_review";
+  if (score >= 25) return "watch";
 
-      return {
-        score: total.score + severityScore[finding.severity] * weight,
-        weight: total.weight + weight,
-      };
-    },
-    { score: 0, weight: 0 },
-  );
-
-  return Math.round(weighted.score / weighted.weight);
+  return "hold";
 }
 
-export async function runNewsAgent(input: NewsAgentInput): Promise<AgentResult> {
-  const subject = input.symbol || input.tokenName || input.contractAddress || "token";
-  const terms = getSearchTerms(input);
+export async function runNewsAgent(input: NewsAgentInput, providers: NewsAgentProviders = {}): Promise<AgentResult> {
+  const subject = input.symbol || input.tokenName || input.projectName || input.contractAddress || "token";
+  const identityTerms = getIdentityTerms(input);
+  const now = providers.now ?? new Date();
+  const feeds = providers.feeds ?? newsSourceRegistry;
+  const fetchNewsFeed = providers.fetchFeed ?? fetchFeed;
 
-  if (terms.length === 0) {
+  if (identityTerms.length === 0) {
     return buildAgentResult({
       agent: "news",
       score: 58,
       verdict: "Missing news search input",
-      summary: "News Agent needs a token symbol, token name or contract address.",
+      summary: "News Agent needs a token symbol, token name, contract address, website or chain to search safely.",
       findings: [
         {
           label: "News input",
           severity: "medium",
-          detail: "Provide tokenName, symbol or contractAddress.",
+          detail: "Provide tokenName, symbol, contractAddress, projectName, websiteUrl or chain.",
         },
       ],
       sources: [],
@@ -298,38 +593,132 @@ export async function runNewsAgent(input: NewsAgentInput): Promise<AgentResult> 
     });
   }
 
-  const feedResults = await Promise.allSettled(newsFeeds.map(fetchFeed));
+  const feedResults = await Promise.allSettled(feeds.map(fetchNewsFeed));
   const items = feedResults.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-  const relevantItems = filterRelevantItems(items, terms);
-  const findings = buildNewsFindings(relevantItems);
-  const score = scoreNewsRisk(findings);
+  const relevantItems = filterRelevantItems(items, identityTerms, now);
+  const events = classifyEvents(relevantItems);
+  const connectedSourceCount = feedResults.filter((result) => result.status === "fulfilled").length;
+  const matchedReliabilities = relevantItems.map(({ item }) => item.reliability);
+  const averageReliability = average(matchedReliabilities) || average(feedResults.map((result, index) => (result.status === "fulfilled" ? feeds[index].reliability : 0)).filter(Boolean));
+  const averageIdentityConfidence = average(relevantItems.map(({ identity }) => identity.confidence)) || (identityTerms.every((term) => term.strength === "weak") ? 0.22 : 0.38);
+  const averageRecencyWeight = average(relevantItems.map(({ recencyWeight }) => recencyWeight));
+  const independentSourceCount = new Set(relevantItems.map(({ item }) => item.source)).size;
+  const score = connectedSourceCount === 0
+    ? 58
+    : getNewsScore({
+        events,
+        connectedSourceCount,
+        relevantItemCount: relevantItems.length,
+        averageReliability,
+        averageIdentityConfidence,
+        averageRecencyWeight,
+        independentSourceCount,
+      });
+  const findings = buildNewsFindings({
+    relevantItems,
+    events,
+    connectedSourceCount,
+    averageReliability,
+    averageIdentityConfidence,
+    averageRecencyWeight,
+    score,
+  });
+  const checkedAt = now.toISOString();
   const sources: AgentSource[] = feedResults.map((result, index) => ({
-    label: newsFeeds[index].label,
-    url: newsFeeds[index].url,
+    label: feeds[index].label,
+    url: feeds[index].rssUrl ?? feeds[index].url,
     status: result.status === "fulfilled" ? "connected" : "unavailable",
     detail:
       result.status === "fulfilled"
-        ? `${result.value.length} RSS item${result.value.length === 1 ? "" : "s"} fetched.`
-        : "RSS feed unavailable for this request.",
+        ? `${result.value.length} item${result.value.length === 1 ? "" : "s"} fetched from ${feeds[index].kind} tier ${feeds[index].tier}.`
+        : `${feeds[index].kind} source unavailable or not configured for automated fetch.`,
+    checkedAt,
+    reliability: result.status === "fulfilled" ? feeds[index].reliability : 0.12,
   }));
-  const matchedArticleSources: AgentSource[] = relevantItems.slice(0, 5).map((item) => ({
+  const matchedArticleSources: AgentSource[] = relevantItems.slice(0, 8).map(({ item, identity, recencyWeight }) => ({
     label: `${item.source}: ${item.title.slice(0, 72)}`,
     url: item.link,
     status: "connected",
-    detail: item.publishedAt ? `Matched article published ${item.publishedAt.toISOString()}.` : "Matched article from connected RSS feed.",
+    detail: `Matched article with ${Math.round(identity.confidence * 100)}% identity confidence and ${Math.round(recencyWeight * 100)}% recency weight.`,
+    checkedAt,
+    reliability: item.reliability,
   }));
+  const recommendedAction = getRecommendedAction(score, connectedSourceCount, averageIdentityConfidence);
 
   return buildAgentResult({
     agent: "news",
     score,
-    verdict: score >= 75 ? "Critical news risk detected" : score >= 50 ? "Negative news risk detected" : score >= 25 ? "News review needed" : "No major news risk",
+    verdict:
+      connectedSourceCount === 0
+        ? "News sources unavailable"
+        : score >= 75
+          ? "Critical news risk detected"
+          : score >= 50
+            ? "Negative news risk detected"
+            : score >= 25
+              ? "News review needed"
+              : "No major news risk",
     summary:
-      relevantItems.length > 0
-        ? `${subject} matched ${relevantItems.length} recent RSS item${relevantItems.length === 1 ? "" : "s"} across connected crypto news sources.`
-        : `${subject} had no recent matching RSS coverage across connected sources.`,
+      connectedSourceCount === 0
+        ? `${subject} could not be checked because configured news sources were unavailable.`
+        : relevantItems.length > 0
+          ? `${subject} matched ${relevantItems.length} deduped recent article${relevantItems.length === 1 ? "" : "s"} and ${events.length} classified event${events.length === 1 ? "" : "s"}.`
+          : `${subject} had no recent matching coverage across connected sources; this is treated as partial information.`,
     findings,
     sources: [...sources, ...matchedArticleSources],
-    confidence: sources.some((source) => source.status === "connected") ? 0.58 : 0.24,
-    recommendedAction: score >= 75 ? "manual_review" : score >= 50 ? "manual_review" : score >= 25 ? "watch" : "hold",
+    confidence: connectedSourceCount === 0 ? 0.2 : Math.min(0.74, 0.34 + connectedSourceCount * 0.08 + averageIdentityConfidence * 0.22),
+    recommendedAction,
+    blockingReasons: connectedSourceCount === 0 ? ["No connected news source contributed to this result."] : [],
+    missingData:
+      connectedSourceCount === 0
+        ? [
+            {
+              field: "news sources",
+              reason: "All configured news sources were unavailable.",
+              impact: "high",
+              requiredFor: "news risk confidence",
+            },
+          ]
+        : relevantItems.length === 0
+          ? [
+              {
+                field: "matched coverage",
+                reason: "Connected news sources returned no article matching the resolved token identity.",
+                impact: "medium",
+                requiredFor: "news event classification",
+              },
+            ]
+          : [],
+    rawSignals: {
+      sourceRegistry: feeds.map((feed) => ({
+        label: feed.label,
+        tier: feed.tier,
+        kind: feed.kind,
+        reliability: feed.reliability,
+        automatedFetch: Boolean(feed.rssUrl),
+      })),
+      identityTerms,
+      matchedArticles: relevantItems.map(({ item, identity, recencyWeight }) => ({
+        title: item.title,
+        url: item.link,
+        source: item.source,
+        sourceTier: item.sourceTier,
+        sourceReliability: item.reliability,
+        publishedAt: item.publishedAt?.toISOString(),
+        identityMatchConfidence: identity.confidence,
+        matchedTerms: identity.matchedTerms.map((term) => term.label),
+        recencyWeight,
+      })),
+      events,
+      sourceReliability: averageReliability,
+      identityMatchConfidence: averageIdentityConfidence,
+      positiveCatalysts: events.filter((event) => event.type === "positive_catalyst"),
+      negativeCatalysts: events.filter((event) => event.type !== "positive_catalyst"),
+      recencyWindows: {
+        last24h: relevantItems.filter(({ item }) => item.publishedAt && now.getTime() - item.publishedAt.getTime() <= 86_400_000).length,
+        last7d: relevantItems.filter(({ item }) => item.publishedAt && now.getTime() - item.publishedAt.getTime() <= 7 * 86_400_000).length,
+        last30d: relevantItems.filter(({ item }) => item.publishedAt && now.getTime() - item.publishedAt.getTime() <= 30 * 86_400_000).length,
+      },
+    },
   });
 }

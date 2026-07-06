@@ -55,6 +55,8 @@ async function runTokenSpecialists(identity: ReturnType<typeof resolveTokenIdent
         tokenName: identity.tokenName,
         symbol: identity.symbol,
         contractAddress: identity.contractAddress,
+        websiteUrl: identity.websiteUrl,
+        chain: identity.chain,
       }),
     ),
     runAgentSafely("social", () =>
@@ -95,4 +97,3 @@ export async function runAgentOrchestration(input: AgentOrchestrationInput): Pro
     decision,
   };
 }
-

@@ -8,6 +8,9 @@ const bodySchema = z.object({
   tokenName: z.string().optional(),
   symbol: z.string().optional(),
   contractAddress: z.string().optional(),
+  projectName: z.string().optional(),
+  websiteUrl: z.string().url().optional(),
+  chain: z.string().optional(),
 });
 
 export async function POST(request: Request) {
