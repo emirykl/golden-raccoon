@@ -5,6 +5,8 @@ import type { FormEvent } from "react";
 import { useAccount } from "wagmi";
 import { ArrowRight, Bot, Check, ChevronDown, Loader2, Newspaper, RadioTower, ShieldCheck, Wallet } from "lucide-react";
 import type { AgentResult, PortfolioSnapshot, TokenHolding, TokenScanResult } from "@/server/types";
+import { AgentResultPanel } from "@/components/AgentResultPanel";
+import { NoDataState } from "@/components/NoDataState";
 import { RiskScoreCard } from "@/components/RiskScoreCard";
 import { WalletPortfolioCard } from "@/components/WalletPortfolioCard";
 
@@ -76,6 +78,30 @@ function getStepTone(status: DashboardStepStatus) {
   return "border-white/10 bg-black/20 text-white/52";
 }
 
+function getPortfolioRiskDrivers(portfolio: PortfolioSnapshot) {
+  const topHoldings = [...portfolio.holdings].sort((left, right) => right.riskScore - left.riskScore).slice(0, 3);
+  const largestHolding = [...portfolio.holdings].sort((left, right) => right.allocationPercent - left.allocationPercent)[0];
+  const stableReserve = portfolio.holdings
+    .filter((holding) => ["USDC", "USDT", "DAI"].includes(holding.symbol.toUpperCase()))
+    .reduce((total, holding) => total + holding.allocationPercent, 0);
+  const liquidityExitRisk = portfolio.holdings
+    .filter((holding) => holding.signals.liquidityRisk >= 70)
+    .reduce((total, holding) => total + holding.allocationPercent, 0);
+
+  return {
+    topHoldings,
+    largestHolding,
+    stableReserve,
+    liquidityExitRisk,
+    suggestedRebalance:
+      portfolio.riskScore >= 70
+        ? "Reduce high-risk exposure and increase stable reserve."
+        : stableReserve < 15
+          ? "Increase stable reserve before taking more token risk."
+          : "Monitor current allocation; no urgent rebalance signal.",
+  };
+}
+
 async function postAgentResult(endpoint: string, body: unknown): Promise<AgentResult> {
   const response = await fetch(endpoint, {
     method: "POST",
@@ -114,8 +140,10 @@ export function DashboardClient() {
   }, [address]);
 
   if (!portfolio) {
-    return <div className="glass-panel rounded-[28px] p-8 text-white/56">Loading portfolio...</div>;
+    return <NoDataState title="Provider unavailable" detail="Portfolio source has not returned a wallet snapshot yet." action="Not enough connected sources. No mock data used." />;
   }
+
+  const riskDrivers = getPortfolioRiskDrivers(portfolio);
 
   async function runTokenScan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -305,6 +333,48 @@ export function DashboardClient() {
         <div className="grid items-stretch gap-5 lg:grid-cols-[1.15fr_.85fr]">
           <WalletPortfolioCard portfolio={portfolio} walletAddress={address} />
           <RiskScoreCard score={portfolio.riskScore} />
+        </div>
+      </section>
+
+      <section className="glass-panel rounded-[28px] p-5">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+          <div>
+            <div className="text-sm uppercase tracking-[0.18em] text-[#d9a441]">Risk drivers</div>
+            <h2 className="mt-2 text-2xl font-semibold">Portfolio pressure points</h2>
+          </div>
+          <div className="text-sm text-white/46">{riskDrivers.suggestedRebalance}</div>
+        </div>
+        <div className="mt-5 grid gap-3 lg:grid-cols-4">
+          <div className="rounded-2xl bg-white/6 p-4">
+            <div className="text-sm text-white/42">Largest holding</div>
+            <div className="mt-1 text-xl font-semibold">{riskDrivers.largestHolding?.symbol ?? "N/A"}</div>
+            <div className="mt-1 text-sm text-white/48">{riskDrivers.largestHolding?.allocationPercent.toFixed(1) ?? "0.0"}%</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 p-4">
+            <div className="text-sm text-white/42">Stable reserve</div>
+            <div className="mt-1 text-xl font-semibold">{riskDrivers.stableReserve.toFixed(1)}%</div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full bg-emerald-300" style={{ width: `${Math.min(100, riskDrivers.stableReserve)}%` }} />
+            </div>
+          </div>
+          <div className="rounded-2xl bg-white/6 p-4">
+            <div className="text-sm text-white/42">Liquidity exit risk</div>
+            <div className="mt-1 text-xl font-semibold">{riskDrivers.liquidityExitRisk.toFixed(1)}%</div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full bg-red-300" style={{ width: `${Math.min(100, riskDrivers.liquidityExitRisk)}%` }} />
+            </div>
+          </div>
+          <div className="rounded-2xl bg-white/6 p-4">
+            <div className="text-sm text-white/42">Top risk holdings</div>
+            <div className="mt-2 space-y-1">
+              {riskDrivers.topHoldings.map((holding) => (
+                <div key={`${holding.tokenAddress}:${holding.symbol}`} className="flex justify-between gap-2 text-sm text-white/58">
+                  <span>{holding.symbol}</span>
+                  <span>{holding.riskScore}/100</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
 
@@ -614,33 +684,15 @@ export function DashboardClient() {
               </div>
             ) : null}
 
+            {dashboardAgentResults.length === 0 && !isRunningAgents ? (
+              <div className="mt-5">
+                <NoDataState title="No agent result yet" detail="Run the agent stack to populate score breakdown, sources and missing data." />
+              </div>
+            ) : null}
+
             <div className="mt-5 space-y-3">
               {dashboardAgentResults.map((result) => (
-                <div key={result.agent} className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
-                    <div>
-                      <div className="text-sm uppercase tracking-[0.14em] text-[#d9a441]">{result.agent}</div>
-                      <div className="mt-1 text-lg font-semibold">{result.verdict}</div>
-                    </div>
-                    <div className="rounded-full border border-white/10 px-3 py-1 text-sm text-white/54">{result.score}/100</div>
-                  </div>
-                  <div className="mt-3 text-sm leading-6 text-white/56">{result.summary}</div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {result.findings.slice(0, 4).map((finding) => (
-                      <div key={`${result.agent}:${finding.label}`} className="rounded-xl bg-white/6 p-3">
-                        <div className="text-sm font-semibold">{finding.label}</div>
-                        <div className="mt-1 text-xs leading-5 text-white/46">{finding.detail}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {result.sources.slice(0, 4).map((source) => (
-                      <span key={`${result.agent}:${source.label}`} className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/42">
-                        {source.label}: {source.status}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                <AgentResultPanel key={result.agent} result={result} />
               ))}
             </div>
           </div>

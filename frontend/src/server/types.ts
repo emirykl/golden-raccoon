@@ -339,6 +339,11 @@ export type StorageHealth = {
   provider: StorageProvider;
   persistent: boolean;
   detail: string;
+  schema?: {
+    tables: string[];
+    adapterApi: string[];
+    migration: string;
+  };
 };
 
 export type RecommendationRecord = {

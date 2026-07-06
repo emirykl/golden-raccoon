@@ -19,6 +19,34 @@ type CreateAgentRunInput = {
   userAction?: AgentRunRecord["userAction"];
 };
 
+export const storageSchemaContract = {
+  tables: [
+    "wallets",
+    "agent_runs",
+    "agent_results",
+    "recommendations",
+    "user_rules",
+    "approvals",
+    "transactions",
+    "token_identities",
+    "source_snapshots",
+  ],
+  adapterApi: [
+    "listAgentRunRecords",
+    "getAgentRunRecord",
+    "createAgentRunRecord",
+    "listRecommendationRecords",
+    "createRecommendationRecord",
+    "listTransactionRecords",
+    "createTransactionRecord",
+    "listApprovalRecords",
+    "createApprovalRecord",
+    "getUserRuleRecord",
+    "upsertUserRuleRecord",
+  ],
+  migration: "frontend/src/server/storage/schema.sql",
+};
+
 const memoryStore = globalThis as typeof globalThis & {
   __goldenRaccoonAgentRuns?: AgentRunRecord[];
   __goldenRaccoonRecommendations?: RecommendationRecord[];
@@ -72,7 +100,8 @@ export function getStorageHealth(): StorageHealth {
     return {
       provider: "supabase_postgres",
       persistent: false,
-      detail: "Supabase env vars are configured. The MVP adapter still uses in-memory storage until the DB client is wired.",
+      detail: "Supabase env vars are configured. The MVP adapter still uses in-memory storage, but the function API and schema contract are fixed for adapter parity.",
+      schema: storageSchemaContract,
     };
   }
 
@@ -80,6 +109,7 @@ export function getStorageHealth(): StorageHealth {
     provider: "memory",
     persistent: false,
     detail: "Using in-memory MVP storage. Records reset when the server process restarts.",
+    schema: storageSchemaContract,
   };
 }
 
@@ -105,11 +135,16 @@ export function createAgentRunRecord(input: CreateAgentRunInput): AgentRunRecord
     unavailable: result.sources.filter((source) => source.status === "unavailable").length,
     mock: result.sources.filter((source) => source.status === "mock").length,
   }));
+  const resultSnapshots = input.results.map((result) => ({
+    agent: result.agent,
+    rawSignals: result.rawSignals ?? {},
+    sources: result.sources,
+    decisionExplanation: result.agent === "decision" ? result.rawSignals?.explanation : undefined,
+  }));
   const record: AgentRunRecord = {
     id: createId(),
     walletAddress: input.walletAddress,
     mode: input.mode,
-    inputSnapshot: input.inputSnapshot,
     targetToken: input.targetToken,
     status: completed ? (failed ? "partial" : "completed") : "failed",
     recommendation: decision?.recommendedAction ?? "manual_review",
@@ -118,6 +153,10 @@ export function createAgentRunRecord(input: CreateAgentRunInput): AgentRunRecord
     summary: decision?.summary ?? "Agent run ended before a final decision was produced.",
     results: input.results,
     sourceStatuses,
+    inputSnapshot: {
+      ...(input.inputSnapshot ?? {}),
+      resultSnapshots,
+    },
     userAction: input.userAction ?? "pending",
     createdAt: new Date().toISOString(),
   };

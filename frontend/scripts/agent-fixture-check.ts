@@ -2,8 +2,10 @@ import { runNewsAgent } from "../src/server/agents/news";
 import { runOnchainAgent } from "../src/server/agents/onchain";
 import { runDecisionAgent } from "../src/server/agents/decision";
 import { buildExecutionPreview, runExecutionAgent } from "../src/server/agents/execution";
+import { scoreToRiskLevel } from "../src/server/agents/shared";
 import { runSocialAgent } from "../src/server/agents/social";
-import { createAgentRunRecord } from "../src/server/storage";
+import { resolveTokenIdentity } from "../src/server/identity/tokenIdentity";
+import { createAgentRunRecord, getStorageHealth } from "../src/server/storage";
 import type { AgentResult } from "../src/server/types";
 import { POST as confirmExecution } from "../src/app/api/execute/confirm/route";
 
@@ -572,6 +574,24 @@ async function runExecutionChecks() {
   assert(runRecord.mode === "token_scan", "Agent run history must store run mode.");
   assert(runRecord.inputSnapshot?.symbol === "MEME", "Agent run history must store input snapshot.");
   assert(Array.isArray(runRecord.sourceStatuses) && runRecord.sourceStatuses.length > 0, "Agent run history must store source status snapshots.");
+  assert(Array.isArray(runRecord.inputSnapshot?.resultSnapshots), "Agent run history must store result raw/source snapshots.");
+}
+
+async function runReadinessChecks() {
+  assert(scoreToRiskLevel(12) === "low", "Scoring helper must map low risk consistently.");
+  assert(scoreToRiskLevel(52) === "high", "Scoring helper must map high risk consistently.");
+
+  const symbolOnlyIdentity = resolveTokenIdentity({ symbol: "GOAT" });
+  assert(symbolOnlyIdentity.confidenceLabel === "low", "Symbol-only identity must remain low confidence.");
+
+  const storageHealth = getStorageHealth();
+  for (const table of ["wallets", "agent_runs", "agent_results", "recommendations", "user_rules", "approvals", "transactions", "token_identities", "source_snapshots"]) {
+    assert(storageHealth.schema?.tables.includes(table), `Storage schema contract must include ${table}.`);
+  }
+
+  const unresolvedScan = await (await import("../src/server/scan/tokenScan")).runTokenScan("not-a-contract", "base");
+  assert(unresolvedScan.dataQuality?.mockSources === 0, "Unresolved token scan must not use mock data.");
+  assert(unresolvedScan.dataQuality?.mode === "unavailable", "Unresolved token scan must report unavailable data.");
 }
 
 async function main() {
@@ -580,6 +600,7 @@ async function main() {
   await runSocialChecks();
   await runDecisionChecks();
   await runExecutionChecks();
+  await runReadinessChecks();
 
   console.log("Agent fixture checks passed.");
 }

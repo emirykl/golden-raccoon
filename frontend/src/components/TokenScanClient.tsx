@@ -3,6 +3,7 @@
 import { Lock } from "lucide-react";
 import { useState } from "react";
 import type { TokenScanResult } from "@/server/types";
+import { NoDataState } from "@/components/NoDataState";
 import { RiskBreakdownCard } from "@/components/RiskBreakdownCard";
 
 const checks = ["Social", "Contract", "Liquidity", "Verdict"];
@@ -33,6 +34,10 @@ function formatPercent(value?: number) {
   }
 
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function findBreakdown(scan: TokenScanResult, labels: string[]) {
+  return scan.riskBreakdown.filter((item) => labels.some((label) => item.label.toLowerCase().includes(label) || item.key.toLowerCase().includes(label))).slice(0, 3);
 }
 
 export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: string }) {
@@ -135,6 +140,21 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
                 ))}
               </div>
             </div>
+            <div className="rounded-[28px] border border-[#d9a441]/25 bg-[#d9a441]/8 p-6">
+              <div className="text-sm uppercase tracking-[0.18em] text-[#d9a441]">Final decision</div>
+              <h2 className="mt-2 text-2xl font-semibold capitalize">{scan.verdict.replaceAll("_", " ")}</h2>
+              <div className="mt-3 text-sm leading-6 text-white/58">
+                Suggested action: {scan.suggestedAction.type.replaceAll("_", " ")}
+                {scan.suggestedAction.percent ? ` ${scan.suggestedAction.percent}% ${scan.suggestedAction.fromToken} to ${scan.suggestedAction.toToken}` : ""}
+              </div>
+              <div className="mt-4 space-y-2">
+                {scan.reasons.slice(0, 3).map((reason) => (
+                  <div key={reason} className="rounded-2xl bg-black/20 px-4 py-3 text-sm text-white/58">
+                    {reason}
+                  </div>
+                ))}
+              </div>
+            </div>
             {scan.market ? (
               <div className="glass-panel rounded-[28px] p-6">
                 <div className="flex items-start justify-between gap-4">
@@ -173,6 +193,31 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
           </div>
           <div className="space-y-5">
             <RiskBreakdownCard items={scan.riskBreakdown} />
+            <section className="glass-panel rounded-[28px] p-6">
+              <h2 className="text-xl font-semibold">Why this decision</h2>
+              <div className="mt-4 grid gap-3">
+                {[
+                  ["Onchain blockers", findBreakdown(scan, ["contract", "liquidity", "holder"])],
+                  ["News catalysts", findBreakdown(scan, ["news", "catalyst", "regulatory"])],
+                  ["Social identity confidence", findBreakdown(scan, ["social", "phishing", "engagement", "xsentiment"])],
+                ].map(([label, items]) => (
+                  <div key={label as string} className="rounded-2xl bg-white/6 p-4">
+                    <div className="text-sm font-semibold">{label as string}</div>
+                    <div className="mt-2 space-y-2">
+                      {(items as ReturnType<typeof findBreakdown>).length > 0 ? (
+                        (items as ReturnType<typeof findBreakdown>).map((item) => (
+                          <div key={`${label}:${item.label}`} className="text-xs leading-5 text-white/52">
+                            {item.label}: {item.finding}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-xs leading-5 text-white/42">No connected signal in this category.</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
             {scan.dataQuality ? (
               <section className="glass-panel rounded-[28px] p-6">
                 <div className="flex items-start justify-between gap-4">
@@ -209,6 +254,12 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
                 ))}
               </div>
             </section>
+            {scan.dataQuality?.mode === "unavailable" || scan.dataQuality?.connectedSources === 0 ? (
+              <NoDataState
+                title="Not enough connected sources"
+                detail="Provider unavailable or token identity could not be resolved. This result is conservative and uses no mock data."
+              />
+            ) : null}
             <section className="rounded-[28px] border border-[#d9a441]/25 bg-[#d9a441]/8 p-6">
               <div className="flex items-start gap-4">
                 <div className="rounded-2xl bg-[#d9a441]/12 p-3 text-[#d9a441]">

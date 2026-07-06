@@ -11,6 +11,7 @@ const requiredFiles = [
   "frontend/src/server/security/policy.ts",
   "frontend/src/server/security/rateLimit.ts",
   "frontend/src/server/storage/index.ts",
+  "frontend/src/server/storage/schema.sql",
   "frontend/src/server/agents/execution/policy.ts",
   "frontend/src/app/api/health/route.ts",
   "frontend/src/app/api/history/agent-runs/route.ts",
@@ -115,6 +116,13 @@ checkRequiredFiles();
 checkIgnoredSourceFiles();
 checkPathAliases();
 checkSecrets();
+
+const schema = readFileSync(join(root, "frontend/src/server/storage/schema.sql"), "utf8");
+for (const table of ["wallets", "agent_runs", "agent_results", "recommendations", "user_rules", "approvals", "transactions", "token_identities", "source_snapshots"]) {
+  if (!schema.includes(`create table if not exists ${table}`)) {
+    fail(`storage schema is missing table contract: ${table}`);
+  }
+}
 
 if (!process.exitCode) {
   console.log("deploy-readiness: ok");

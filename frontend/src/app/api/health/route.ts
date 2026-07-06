@@ -17,6 +17,9 @@ export function GET() {
       storageCounts: getStorageCounts(),
       security: getSecurityHealth(),
       cache: apiCacheStrategy,
+      mockFallbacksEnabled: false,
+      liveModeUsesMockData: false,
+      professionalRiskLanguage: true,
       checkedAt: new Date().toISOString(),
     },
     {
