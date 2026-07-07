@@ -4,6 +4,7 @@ import { runAgentSafely, scoreToRiskLevel } from "@/server/agents/shared";
 import { runNewsAgent } from "@/server/agents/news";
 import { runOnchainAgent } from "@/server/agents/onchain";
 import { runSocialAgent } from "@/server/agents/social";
+import { buildRiskReport, createRiskReportInput } from "@/server/scan/riskReport";
 import { normalizeTokenInput } from "@/server/scan/tokenInput";
 
 function riskLevel(score: number): RiskLevel {
@@ -130,10 +131,15 @@ function buildUnresolvedTokenScan(query: string, chain?: string): TokenScanResul
     },
   ];
 
+  const scannedAt = new Date().toISOString();
+  const dataQuality = getDataQuality(sources);
+  const normalizedInput = createRiskReportInput(query, chain, null);
+
   return {
     symbol: query.trim().slice(0, 16).toUpperCase() || "UNKNOWN",
     tokenAddress: "",
     chain: chain || "unknown",
+    normalizedInput,
     overallRiskScore: 72,
     opportunityScore: 0,
     verdict: "high_risk",
@@ -159,8 +165,42 @@ function buildUnresolvedTokenScan(query: string, chain?: string): TokenScanResul
       },
     ],
     sources,
-    dataQuality: getDataQuality(sources),
-    scannedAt: new Date().toISOString(),
+    dataQuality,
+    riskReport: {
+      id: `risk_unresolved_${scannedAt.replace(/[^0-9]/g, "")}`,
+      chain: normalizedInput.chain,
+      symbol: query.trim().slice(0, 16).toUpperCase() || "UNKNOWN",
+      buyRisk: 72,
+      confidence: 0.18,
+      verdict: "manual_review",
+      summary: "Bu input desteklenen contract veya DexScreener linki olarak cozumlenemedi. Mock risk skoru uretilmedi; manuel inceleme gerekli.",
+      topReasons: [
+        "Input valid EVM contract address degil.",
+        "Input desteklenen DexScreener token veya pair URL'i degil.",
+        "Canli kaynak calismadigi icin alim guvenli kabul edilemez.",
+      ],
+      input: normalizedInput,
+      agentCards: [],
+      sources: [
+        {
+          label: "Input normalization",
+          status: "unavailable",
+          detail: "Input could not be resolved as an EVM contract address or DexScreener pair/token URL.",
+        },
+      ],
+      missingData: [
+        {
+          field: "token identity",
+          reason: "Contract address or DexScreener identity could not be resolved.",
+          impact: "high",
+          requiredFor: "risk report",
+          canRetry: true,
+          fallbackUsed: false,
+        },
+      ],
+      createdAt: scannedAt,
+    },
+    scannedAt,
   };
 }
 
@@ -228,11 +268,23 @@ export async function runTokenScan(query: string, chain?: string): Promise<Token
       detail: source.detail ?? "",
     })),
   ];
+  const dataQuality = getDataQuality(sources);
+  const scannedAt = onchainResult.createdAt;
+  const riskReport = buildRiskReport({
+    query,
+    requestedChain: chain,
+    normalized,
+    results: [onchainResult, newsResult, socialResult, decisionResult],
+    decision: decisionResult,
+    dataQuality,
+    createdAt: scannedAt,
+  });
 
   return {
     symbol: normalized.symbol ?? "TOKEN",
     tokenAddress: normalized.contractAddress,
     chain: normalized.chain,
+    normalizedInput: riskReport.input,
     market: normalized.market,
     overallRiskScore,
     opportunityScore: Math.max(0, 100 - overallRiskScore),
@@ -250,9 +302,10 @@ export async function runTokenScan(query: string, chain?: string): Promise<Token
             severity: riskLevel(overallRiskScore),
             finding: `${decisionResult.summary} ${onchainResult.summary} ${newsResult.summary} ${socialResult.summary}`,
           },
-        ],
+    ],
     sources,
-    dataQuality: getDataQuality(sources),
-    scannedAt: onchainResult.createdAt,
+    dataQuality,
+    riskReport,
+    scannedAt,
   };
 }

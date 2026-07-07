@@ -23,6 +23,7 @@ import { criticalFindingDoesNotLowerRisk, missingDataDoesNotIncreaseConfidence, 
 import { hashSourceSnapshot } from "../src/server/storage";
 import { rateLimitProfiles } from "../src/server/security/rateLimit";
 import { contractAddressSchema, tokenSymbolSchema, walletAddressSchema } from "../src/server/security/inputValidation";
+import { buildRiskReport, validateRiskReport } from "../src/server/scan/riskReport";
 import type { AgentResult, PortfolioSnapshot, TokenHolding } from "../src/server/types";
 import { POST as confirmExecution } from "../src/app/api/execute/confirm/route";
 
@@ -790,6 +791,30 @@ async function runReadinessChecks() {
   const unresolvedScan = await (await import("../src/server/scan/tokenScan")).runTokenScan("not-a-contract", "base");
   assert(unresolvedScan.dataQuality?.mockSources === 0, "Unresolved token scan must not use mock data.");
   assert(unresolvedScan.dataQuality?.mode === "unavailable", "Unresolved token scan must report unavailable data.");
+  assert(unresolvedScan.riskReport?.verdict === "manual_review", "Unresolved token scan must produce a conservative manual-review risk report.");
+  assert(unresolvedScan.riskReport && validateRiskReport(unresolvedScan.riskReport).success, "Unresolved token scan risk report must satisfy runtime schema.");
+
+  const onchainFixture = blueChipLikeResult();
+  const newsFixture = unavailableAgentResult("news");
+  const socialFixture = unavailableAgentResult("social");
+  const decisionFixture = runDecisionAgent({ results: [onchainFixture, newsFixture, socialFixture] });
+  const riskReport = buildRiskReport({
+    query: "0x3333333333333333333333333333333333333333",
+    requestedChain: "base",
+    normalized: {
+      chain: "base",
+      contractAddress: "0x3333333333333333333333333333333333333333",
+      symbol: "FIX",
+      name: "Fixture Token",
+      source: "contract_address",
+    },
+    results: [onchainFixture, newsFixture, socialFixture, decisionFixture],
+    decision: decisionFixture,
+    createdAt: now.toISOString(),
+  });
+  assert(validateRiskReport(riskReport).success, "Risk report mapper must satisfy runtime schema.");
+  assert(riskReport.agentCards.some((card) => card.displayName === "Contract Guard"), "Risk report must expose UI-ready Contract Guard card.");
+  assert(riskReport.agentCards.some((card) => card.factors.length > 0), "Risk report must expose score factors.");
 
   const runId = createAgentRunId("fixture_run");
   assert(runId.startsWith("fixture_run_"), "Agent run id helper must create stable-prefixed run ids.");

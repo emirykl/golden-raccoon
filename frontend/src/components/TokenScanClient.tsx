@@ -2,18 +2,20 @@
 
 import { Lock } from "lucide-react";
 import { useState } from "react";
-import type { TokenScanResult } from "@/server/types";
+import type { RiskReportVerdict, TokenScanResult } from "@/server/types";
 import { NoDataState } from "@/components/NoDataState";
 import { RiskBreakdownCard } from "@/components/RiskBreakdownCard";
 
-const checks = ["Social", "Contract", "Liquidity", "Verdict"];
+const checks = ["Contract Guard", "Social Scout", "News Oracle", "Decision Core"];
 const chains = [
   { value: "base", label: "Base" },
+  { value: "goat", label: "GOAT" },
   { value: "bsc", label: "BNB" },
   { value: "ethereum", label: "Ethereum" },
   { value: "arbitrum", label: "Arbitrum" },
   { value: "polygon", label: "Polygon" },
-  { value: "linea", label: "Linea" },
+  { value: "optimism", label: "Optimism" },
+  { value: "solana", label: "Solana later", disabled: true },
 ];
 
 function formatUsd(value?: number) {
@@ -40,11 +42,27 @@ function findBreakdown(scan: TokenScanResult, labels: string[]) {
   return scan.riskBreakdown.filter((item) => labels.some((label) => item.label.toLowerCase().includes(label) || item.key.toLowerCase().includes(label))).slice(0, 3);
 }
 
+function verdictLabel(verdict?: RiskReportVerdict) {
+  if (!verdict) return "Manual review";
+
+  return verdict.replaceAll("_", " ");
+}
+
+function riskTone(score: number) {
+  if (score >= 75) return "border-red-400/25 bg-red-500/10 text-red-100";
+  if (score >= 50) return "border-orange-300/25 bg-orange-400/10 text-orange-100";
+  if (score >= 25) return "border-[#d9a441]/25 bg-[#d9a441]/10 text-[#f2c86d]";
+
+  return "border-emerald-300/25 bg-emerald-400/10 text-emerald-100";
+}
+
 export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: string }) {
   const [query, setQuery] = useState(initialQuery || "MEME");
   const [chain, setChain] = useState("base");
   const [scan, setScan] = useState<TokenScanResult | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const report = scan?.riskReport;
+  const normalizedInput = report?.input ?? scan?.normalizedInput;
 
   async function runScan() {
     setIsScanning(true);
@@ -71,7 +89,7 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
               className="h-12 rounded-full border border-white/10 bg-white/7 px-4 text-sm text-white outline-none transition focus:border-[#d9a441]/60"
             >
               {chains.map((item) => (
-                <option key={item.value} value={item.value} className="bg-[#101010] text-white">
+                <option key={item.value} value={item.value} disabled={item.disabled} className="bg-[#101010] text-white">
                   {item.label}
                 </option>
               ))}
@@ -111,38 +129,76 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
       {scan ? (
         <section className="grid gap-5 xl:grid-cols-[.85fr_1.15fr]">
           <div className="space-y-5">
-            <div className="rounded-[28px] border border-red-400/20 bg-red-500/8 p-6">
-              <div className="text-sm uppercase tracking-[0.18em] text-red-200">Scan result</div>
+            <div className={`rounded-[28px] border p-6 ${riskTone(report?.buyRisk ?? scan.overallRiskScore)}`}>
+              <div className="text-sm uppercase tracking-[0.18em] opacity-75">AI Risk Report</div>
               <div className="mt-4 flex items-end justify-between gap-4">
                 <div>
                   <h2 className="text-4xl font-semibold">{scan.symbol}</h2>
-                  <div className="mt-2 text-sm text-white/48">{scan.chain}</div>
+                  <div className="mt-2 text-sm capitalize opacity-70">{verdictLabel(report?.verdict)}</div>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-right">
                   <div>
-                    <div className="text-5xl font-semibold text-red-200">{scan.overallRiskScore}</div>
-                    <div className="text-xs uppercase tracking-[0.2em] text-white/42">Risk</div>
+                    <div className="text-5xl font-semibold">{report?.buyRisk ?? scan.overallRiskScore}%</div>
+                    <div className="text-xs uppercase tracking-[0.2em] opacity-60">Buy risk</div>
                   </div>
                   <div>
-                    <div className="text-5xl font-semibold text-emerald-200">{scan.opportunityScore}</div>
-                    <div className="text-xs uppercase tracking-[0.2em] text-white/42">Opportunity</div>
+                    <div className="text-5xl font-semibold">{Math.round((report?.confidence ?? 0) * 100)}%</div>
+                    <div className="text-xs uppercase tracking-[0.2em] opacity-60">Confidence</div>
                   </div>
                 </div>
               </div>
+              <p className="mt-5 max-w-2xl text-sm leading-6 opacity-80">{report?.summary ?? scan.summary}</p>
+              {normalizedInput ? (
+                <div className="mt-5 grid gap-2 text-xs text-white/58 sm:grid-cols-2">
+                  <div className="rounded-2xl bg-black/20 p-3">Chain: {normalizedInput.chain}</div>
+                  <div className="rounded-2xl bg-black/20 p-3">Source: {normalizedInput.source.replaceAll("_", " ")}</div>
+                  <div className="rounded-2xl bg-black/20 p-3">Contract: {normalizedInput.contractAddress ?? "unresolved"}</div>
+                  <div className="rounded-2xl bg-black/20 p-3">Pair: {normalizedInput.pairAddress ?? "N/A"}</div>
+                </div>
+              ) : null}
             </div>
             <div className="glass-panel rounded-[28px] p-6">
-              <h2 className="text-xl font-semibold">Reasons</h2>
+              <h2 className="text-xl font-semibold">Top reasons</h2>
               <div className="mt-4 space-y-3">
-                {scan.reasons.map((reason) => (
+                {(report?.topReasons.length ? report.topReasons : scan.reasons).map((reason) => (
                   <div key={reason} className="rounded-2xl bg-white/6 p-4 text-sm leading-6 text-white/62">
                     {reason}
                   </div>
                 ))}
               </div>
             </div>
+            {report?.agentCards.length ? (
+              <div className="glass-panel rounded-[28px] p-6">
+                <h2 className="text-xl font-semibold">Agent cards</h2>
+                <div className="mt-5 grid gap-3">
+                  {report.agentCards.map((card) => (
+                    <article key={card.agent} className="rounded-2xl bg-white/6 p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold">{card.displayName}</div>
+                          <div className="mt-1 text-xs capitalize text-white/42">{card.scoreKind} score</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-2xl font-semibold">{card.score}</div>
+                          <div className="text-xs text-white/42">{Math.round(card.confidence * 100)}% conf</div>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-white/54">{card.summary}</p>
+                      <div className="mt-3 space-y-2">
+                        {card.factors.slice(0, 3).map((factor) => (
+                          <div key={`${card.agent}:${factor.label}`} className="rounded-xl bg-black/20 px-3 py-2 text-xs leading-5 text-white/52">
+                            {factor.label}: {factor.detail}
+                          </div>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="rounded-[28px] border border-[#d9a441]/25 bg-[#d9a441]/8 p-6">
               <div className="text-sm uppercase tracking-[0.18em] text-[#d9a441]">Final decision</div>
-              <h2 className="mt-2 text-2xl font-semibold capitalize">{scan.verdict.replaceAll("_", " ")}</h2>
+              <h2 className="mt-2 text-2xl font-semibold capitalize">{verdictLabel(report?.verdict)}</h2>
               <div className="mt-3 text-sm leading-6 text-white/58">
                 Suggested action: {scan.suggestedAction.type.replaceAll("_", " ")}
                 {scan.suggestedAction.percent ? ` ${scan.suggestedAction.percent}% ${scan.suggestedAction.fromToken} to ${scan.suggestedAction.toToken}` : ""}

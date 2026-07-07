@@ -321,10 +321,86 @@ export type ScanSource = {
   detail: string;
 };
 
+export type RiskReportVerdict = "buy_small" | "watch" | "avoid" | "hold" | "reduce_exposure" | "manual_review";
+
+export type ScoreFactorCategory =
+  | "sellability"
+  | "owner_controls"
+  | "taxes"
+  | "liquidity"
+  | "holder_concentration"
+  | "lp_lock"
+  | "market_anomaly"
+  | "creator_behavior"
+  | "social_identity"
+  | "social_engagement"
+  | "phishing"
+  | "news_catalyst"
+  | "news_risk"
+  | "portfolio_exposure"
+  | "source_coverage"
+  | "decision_logic";
+
+export type ScoreFactor = {
+  label: string;
+  category: ScoreFactorCategory;
+  impact: number;
+  weight?: number;
+  severity: RiskLevel;
+  detail: string;
+  sourceLabel?: string;
+  direction: "risk_increase" | "risk_decrease" | "neutral";
+  raw?: unknown;
+};
+
+export type AgentScoreCard = {
+  agent: AgentResult["agent"];
+  displayName: string;
+  score: number;
+  scoreKind: "risk" | "trust" | "signal" | "exposure" | "decision";
+  confidence: number;
+  status: AgentStatus;
+  summary: string;
+  factors: ScoreFactor[];
+  sources: AgentSource[];
+  missingData: AgentMissingData[];
+};
+
+export type RiskReportInput = {
+  query: string;
+  chain: string;
+  contractAddress?: string;
+  pairAddress?: string;
+  pairUrl?: string;
+  symbol?: string;
+  tokenName?: string;
+  source: "contract_address" | "dexscreener_pair_url" | "dexscreener_token_url" | "unresolved";
+};
+
+export type RiskReport = {
+  id: string;
+  chain: string;
+  contractAddress?: string;
+  symbol: string;
+  tokenName?: string;
+  buyRisk: number;
+  confidence: number;
+  verdict: RiskReportVerdict;
+  summary: string;
+  topReasons: string[];
+  input: RiskReportInput;
+  agentCards: AgentScoreCard[];
+  sources: AgentSource[];
+  missingData: AgentMissingData[];
+  executionPreview?: TransactionPreview;
+  createdAt: string;
+};
+
 export type TokenScanResult = {
   symbol: string;
   tokenAddress: string;
   chain: string;
+  normalizedInput?: RiskReportInput;
   market?: {
     pairAddress?: string;
     dexId?: string;
@@ -344,6 +420,7 @@ export type TokenScanResult = {
   reasons: string[];
   suggestedAction: SuggestedAction;
   riskBreakdown: RiskBreakdownItem[];
+  riskReport?: RiskReport;
   sources: ScanSource[];
   dataQuality?: SourceDataQuality;
   scannedAt: string;
