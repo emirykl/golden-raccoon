@@ -2,7 +2,7 @@
 
 import { Lock } from "lucide-react";
 import { useState } from "react";
-import type { RiskReportVerdict, TokenScanResult } from "@/server/types";
+import type { RiskReportVerdict, ScoreFactor, TokenScanResult } from "@/server/types";
 import { NoDataState } from "@/components/NoDataState";
 import { RiskBreakdownCard } from "@/components/RiskBreakdownCard";
 
@@ -54,6 +54,28 @@ function riskTone(score: number) {
   if (score >= 25) return "border-[#d9a441]/25 bg-[#d9a441]/10 text-[#f2c86d]";
 
   return "border-emerald-300/25 bg-emerald-400/10 text-emerald-100";
+}
+
+function factorTone(factor: ScoreFactor) {
+  if (factor.severity === "critical") return "border-red-400/25 bg-red-500/12 text-red-100";
+  if (factor.severity === "high") return "border-orange-300/20 bg-orange-400/10 text-orange-100";
+  if (factor.direction === "risk_decrease") return "border-emerald-300/20 bg-emerald-400/10 text-emerald-100";
+
+  return "border-white/8 bg-black/20 text-white/56";
+}
+
+function formatMetaValue(value: string | number | boolean | null | undefined) {
+  if (value === undefined || value === null || value === "") return "N/A";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (typeof value === "number") return Number.isInteger(value) ? value.toLocaleString("en-US") : value.toFixed(2);
+
+  return value;
+}
+
+function factorMetaEntries(factor: ScoreFactor) {
+  return Object.entries(factor.meta ?? {})
+    .filter(([, value]) => value !== undefined)
+    .slice(0, 4);
 }
 
 export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: string }) {
@@ -184,13 +206,52 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
                         </div>
                       </div>
                       <p className="mt-3 text-sm leading-6 text-white/54">{card.summary}</p>
+                      {card.secondaryScores?.length ? (
+                        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                          {card.secondaryScores.map((score) => (
+                            <div key={`${card.agent}:${score.label}`} className="rounded-xl border border-white/8 bg-black/18 px-3 py-2">
+                              <div className="text-xs text-white/42">{score.label}</div>
+                              <div className="mt-1 text-xl font-semibold">{score.score}</div>
+                              <div className="mt-1 text-[11px] leading-4 text-white/42">{score.detail}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {card.criticalFactors?.length ? (
+                        <div className="mt-3 space-y-2">
+                          {card.criticalFactors.map((factor) => (
+                            <div key={`${card.agent}:critical:${factor.label}`} className={`rounded-xl border px-3 py-2 text-xs leading-5 ${factorTone(factor)}`}>
+                              <div className="font-semibold">{factor.label}</div>
+                              <div className="mt-1 opacity-80">{factor.detail}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                       <div className="mt-3 space-y-2">
-                        {card.factors.slice(0, 3).map((factor) => (
-                          <div key={`${card.agent}:${factor.label}`} className="rounded-xl bg-black/20 px-3 py-2 text-xs leading-5 text-white/52">
-                            {factor.label}: {factor.detail}
+                        {card.factors.slice(0, 6).map((factor) => (
+                          <div key={`${card.agent}:${factor.category}:${factor.label}`} className={`rounded-xl border px-3 py-2 text-xs leading-5 ${factorTone(factor)}`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <span className="font-semibold">{factor.label}</span>
+                              <span className="shrink-0 opacity-70">{factor.impact > 0 ? "+" : ""}{factor.impact}</span>
+                            </div>
+                            <div className="mt-1 opacity-80">{factor.detail}</div>
+                            {factorMetaEntries(factor).length ? (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {factorMetaEntries(factor).map(([key, value]) => (
+                                  <span key={`${card.agent}:${factor.label}:${key}`} className="rounded-full bg-white/8 px-2 py-1 text-[11px] capitalize opacity-75">
+                                    {key.replace(/([A-Z])/g, " $1")}: {formatMetaValue(value)}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                         ))}
                       </div>
+                      {card.missingData.length ? (
+                        <div className="mt-3 rounded-xl border border-[#d9a441]/25 bg-[#d9a441]/8 px-3 py-2 text-xs leading-5 text-[#f2c86d]">
+                          Missing data: {card.missingData.map((item) => item.field).join(", ")}
+                        </div>
+                      ) : null}
                     </article>
                   ))}
                 </div>

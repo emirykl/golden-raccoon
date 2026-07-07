@@ -58,6 +58,7 @@ const scoreFactorSchema = z.object({
   sourceLabel: z.string().optional(),
   direction: z.enum(["risk_increase", "risk_decrease", "neutral"]),
   raw: z.unknown().optional(),
+  meta: z.record(z.union([z.string(), z.number(), z.boolean(), z.null(), z.undefined()])).optional(),
 });
 
 export const riskReportSchema = z.object({
@@ -91,6 +92,14 @@ export const riskReportSchema = z.object({
       status: z.string(),
       summary: z.string(),
       factors: z.array(scoreFactorSchema),
+      criticalFactors: z.array(scoreFactorSchema).optional(),
+      secondaryScores: z.array(
+        z.object({
+          label: z.string(),
+          score: z.number().min(0).max(100),
+          detail: z.string(),
+        }),
+      ).optional(),
       sources: z.array(z.unknown()),
       missingData: z.array(z.unknown()),
     }),
@@ -201,6 +210,397 @@ function findingToFactor(agent: AgentResult["agent"], finding: AgentFinding): Sc
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return undefined;
+}
+
+function nestedRecord(source: Record<string, unknown> | undefined, key: string) {
+  return asRecord(source?.[key]);
+}
+
+function asNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+}
+
+function asBooleanFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === "1" || value === "true" || value === "yes";
+}
+
+function formatPercentValue(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(2)}%` : "unknown";
+}
+
+function factorFromRaw(input: {
+  label: string;
+  category: ScoreFactorCategory;
+  impact: number;
+  severity?: RiskLevel;
+  detail: string;
+  sourceLabel?: string;
+  direction?: ScoreFactor["direction"];
+  meta?: ScoreFactor["meta"];
+}): ScoreFactor {
+  return {
+    label: input.label,
+    category: input.category,
+    impact: input.impact,
+    severity: input.severity ?? (input.impact >= 75 ? "critical" : input.impact >= 50 ? "high" : input.impact >= 25 ? "medium" : "low"),
+    detail: input.detail,
+    sourceLabel: input.sourceLabel,
+    direction: input.direction ?? (input.impact > 0 ? "risk_increase" : input.impact < 0 ? "risk_decrease" : "neutral"),
+    meta: input.meta,
+  };
+}
+
+function getLiquidityImpact(liquidityUsd?: number) {
+  if (typeof liquidityUsd !== "number") return 42;
+  if (liquidityUsd < 10_000) return 86;
+  if (liquidityUsd < 50_000) return 68;
+  if (liquidityUsd < 250_000) return 38;
+  return 10;
+}
+
+function buildOnchainRawFactors(result: AgentResult): ScoreFactor[] {
+  const raw = result.rawSignals;
+  const security = nestedRecord(raw, "security");
+  const market = nestedRecord(raw, "market");
+  const bestPair = nestedRecord(market, "bestPair");
+  const holders = nestedRecord(raw, "holders");
+  const lp = nestedRecord(raw, "lp");
+  const lockProvider = nestedRecord(lp, "lockProvider");
+  const scoreBreakdown = nestedRecord(raw, "scoreBreakdown");
+  const factors: ScoreFactor[] = [];
+  const hasSecurity = Boolean(security);
+  const hasPair = Boolean(bestPair);
+  const honeypot = asBooleanFlag(security?.honeypot);
+  const cannotSell =
+    asBooleanFlag(security?.cannotSell) ||
+    result.findings.some((finding) => `${finding.label} ${finding.detail}`.toLowerCase().includes("cannot sell"));
+  const blacklist = asBooleanFlag(security?.blacklist);
+  const criticalFlags = [
+    honeypot ? "honeypot" : undefined,
+    cannotSell ? "cannot sell" : undefined,
+    blacklist ? "blacklist" : undefined,
+  ].filter(Boolean);
+
+  if (criticalFlags.length > 0) {
+    factors.push(
+      factorFromRaw({
+        label: "Critical sellability override",
+        category: "sellability",
+        impact: 96,
+        severity: "critical",
+        detail: `Critical blocker detected: ${criticalFlags.join(", ")}. This should appear before non-critical signals.`,
+        sourceLabel: "GoPlus token security",
+        meta: { honeypot, cannotSell, blacklist },
+      }),
+    );
+  }
+
+  if (hasSecurity) {
+    const buyTax = asNumber(security?.buyTax);
+    const sellTax = asNumber(security?.sellTax);
+    const taxImpact = Math.max(buyTax ?? 0, sellTax ?? 0) >= 20 ? 72 : Math.max(buyTax ?? 0, sellTax ?? 0) >= 8 ? 38 : 8;
+
+    factors.push(
+      factorFromRaw({
+        label: "Buy tax",
+        category: "taxes",
+        impact: buyTax === undefined ? 24 : buyTax >= 20 ? 72 : buyTax >= 8 ? 38 : 8,
+        detail: `Buy tax is ${formatPercentValue(buyTax)}.`,
+        sourceLabel: "GoPlus token security",
+        meta: { buyTaxPercent: buyTax },
+      }),
+      factorFromRaw({
+        label: "Sell tax",
+        category: "taxes",
+        impact: sellTax === undefined ? 24 : sellTax >= 20 ? 72 : sellTax >= 8 ? 38 : 8,
+        detail: `Sell tax is ${formatPercentValue(sellTax)}.`,
+        sourceLabel: "GoPlus token security",
+        meta: { sellTaxPercent: sellTax, combinedTaxImpact: taxImpact },
+      }),
+    );
+  }
+
+  if (hasPair) {
+    const liquidityUsd = asNumber(bestPair?.liquidityUsd);
+    const fdvUsd = asNumber(bestPair?.fdvUsd);
+    const pairAgeDays = asNumber(bestPair?.pairAgeDays);
+    const fdvLiquidityRatio = liquidityUsd && liquidityUsd > 0 && fdvUsd ? fdvUsd / liquidityUsd : undefined;
+
+    factors.push(
+      factorFromRaw({
+        label: "Liquidity USD",
+        category: "liquidity",
+        impact: getLiquidityImpact(liquidityUsd),
+        detail: `DEX liquidity is ${typeof liquidityUsd === "number" ? `$${Math.round(liquidityUsd).toLocaleString("en-US")}` : "unknown"}.`,
+        sourceLabel: "DexScreener token pairs",
+        meta: { liquidityUsd },
+      }),
+      factorFromRaw({
+        label: "Pair age",
+        category: "market_anomaly",
+        impact: pairAgeDays === undefined ? 28 : pairAgeDays < 2 ? 62 : pairAgeDays < 14 ? 34 : 8,
+        detail: `Primary pair age is ${typeof pairAgeDays === "number" ? `${pairAgeDays} day${pairAgeDays === 1 ? "" : "s"}` : "unknown"}.`,
+        sourceLabel: "DexScreener token pairs",
+        meta: { pairAgeDays },
+      }),
+      factorFromRaw({
+        label: "FDV/liquidity ratio",
+        category: "liquidity",
+        impact: fdvLiquidityRatio === undefined ? 34 : fdvLiquidityRatio >= 120 ? 76 : fdvLiquidityRatio >= 40 ? 48 : 12,
+        detail: `FDV/liquidity ratio is ${typeof fdvLiquidityRatio === "number" ? `${fdvLiquidityRatio.toFixed(2)}x` : "unknown"}.`,
+        sourceLabel: "DexScreener token pairs",
+        meta: { fdvUsd, liquidityUsd, fdvLiquidityRatio },
+      }),
+    );
+  } else {
+    factors.push(
+      factorFromRaw({
+        label: "DexScreener unavailable",
+        category: "source_coverage",
+        impact: Math.max(52, asNumber(scoreBreakdown?.sourceQuality) ?? 52),
+        severity: "high",
+        detail: "DexScreener pair data is unavailable, so liquidity and market confidence are reduced.",
+        sourceLabel: "DexScreener token pairs",
+      }),
+    );
+  }
+
+  factors.push(
+    factorFromRaw({
+      label: "Holder concentration",
+      category: "holder_concentration",
+      impact: asNumber(scoreBreakdown?.holderConcentration) ?? 42,
+      detail: `Top holder ${formatPercentValue(asNumber(holders?.topHolderPercent))}; top 5 ${formatPercentValue(asNumber(holders?.top5Percent))}; top 10 ${formatPercentValue(asNumber(holders?.top10Percent))}.`,
+      sourceLabel: "Holder distribution",
+      meta: {
+        topHolderPercent: asNumber(holders?.topHolderPercent),
+        top5Percent: asNumber(holders?.top5Percent),
+        top10Percent: asNumber(holders?.top10Percent),
+        holderCount: asNumber(holders?.holderCount),
+      },
+    }),
+  );
+
+  if (lockProvider) {
+    const protectedPercent = asNumber(lockProvider.protectedPercent);
+    factors.push(
+      factorFromRaw({
+        label: "LP lock/burn status",
+        category: "lp_lock",
+        impact: protectedPercent === undefined ? 44 : protectedPercent >= 80 ? 8 : protectedPercent >= 40 ? 34 : 70,
+        detail: `LP protection is ${formatPercentValue(protectedPercent)} locked or burned; provider status ${String(lockProvider.provider ?? "unknown")}.`,
+        sourceLabel: "GoPlus token security",
+        meta: {
+          lockedPercent: asNumber(lockProvider.lockedPercent),
+          burnedPercent: asNumber(lockProvider.burnedPercent),
+          protectedPercent,
+          provider: typeof lockProvider.provider === "string" ? lockProvider.provider : undefined,
+          unlockDate: typeof lockProvider.unlockDate === "string" ? lockProvider.unlockDate : undefined,
+        },
+      }),
+    );
+  }
+
+  if (!hasSecurity) {
+    factors.push(
+      factorFromRaw({
+        label: "Security provider unavailable",
+        category: "source_coverage",
+        impact: 58,
+        severity: "high",
+        detail: "GoPlus security data is unavailable, so contract flags, taxes and holder details require manual review.",
+        sourceLabel: "GoPlus token security",
+      }),
+    );
+  }
+
+  return factors;
+}
+
+function buildSocialRawFactors(result: AgentResult): ScoreFactor[] {
+  const raw = result.rawSignals;
+  const resolver = nestedRecord(raw, "mandatorySocialResolver");
+  const engagement = nestedRecord(raw, "engagement");
+  const botShill = nestedRecord(raw, "botShillSummary");
+  const phishing = nestedRecord(raw, "phishingScanner");
+  const account = nestedRecord(raw, "account");
+  const limitations = nestedRecord(raw, "limitations");
+  const providerDataAvailable = raw?.providerDataAvailable === true;
+  const factors: ScoreFactor[] = [];
+  const officialConfidence = asNumber(raw?.officialAccountConfidence) ?? 0;
+  const mutualVerificationScore = asNumber(resolver?.mutualVerificationScore);
+  const engagementRisk = asNumber(engagement?.riskScore);
+  const botRisk = asNumber(botShill?.riskScore);
+  const riskyLinks = Array.isArray(phishing?.riskyLinks) ? phishing.riskyLinks.length : undefined;
+  const followerCount = asNumber(account?.followers);
+  const createdAt = typeof account?.createdAt === "string" ? account.createdAt : undefined;
+
+  factors.push(
+    factorFromRaw({
+      label: "Official account match",
+      category: "social_identity",
+      impact: officialConfidence >= 0.7 ? -18 : officialConfidence >= 0.4 ? 18 : 48,
+      severity: officialConfidence >= 0.7 ? "low" : officialConfidence >= 0.4 ? "medium" : "high",
+      detail: `Official account confidence is ${Math.round(officialConfidence * 100)}%.`,
+      sourceLabel: "Social provider",
+      direction: officialConfidence >= 0.7 ? "risk_decrease" : "risk_increase",
+      meta: { officialAccountConfidence: officialConfidence },
+    }),
+    factorFromRaw({
+      label: "Website/social mutual verification",
+      category: "social_identity",
+      impact: mutualVerificationScore === undefined ? 24 : mutualVerificationScore >= 70 ? -16 : mutualVerificationScore >= 35 ? 18 : 44,
+      severity: mutualVerificationScore === undefined ? "medium" : mutualVerificationScore >= 70 ? "low" : mutualVerificationScore >= 35 ? "medium" : "high",
+      detail: `Website/social mutual verification score is ${mutualVerificationScore === undefined ? "unknown" : `${Math.round(mutualVerificationScore)}%`}.`,
+      sourceLabel: "Social resolver",
+      direction: mutualVerificationScore !== undefined && mutualVerificationScore >= 70 ? "risk_decrease" : "risk_increase",
+      meta: { mutualVerificationScore },
+    }),
+    factorFromRaw({
+      label: "Engagement quality",
+      category: "social_engagement",
+      impact: engagementRisk ?? 36,
+      detail: typeof engagement?.detail === "string" ? engagement.detail : "Live engagement quality metrics are unavailable.",
+      sourceLabel: "Social provider",
+      meta: {
+        engagementRisk,
+        engagementAvailable: engagement?.available === true,
+      },
+    }),
+    factorFromRaw({
+      label: "Bot/shill risk",
+      category: "social_engagement",
+      impact: botRisk ?? 36,
+      detail:
+        botRisk === undefined
+          ? "Comments/replies unavailable, so fake bot score is not generated."
+          : `Bot/shill risk is ${botRisk}/100 from repeated text, low-quality replies, hype posts and new reply accounts.`,
+      sourceLabel: "Social provider",
+      meta: {
+        botRisk,
+        hypePostCount: asNumber(botShill?.hypePostCount),
+        lowQualityReplyCount: asNumber(botShill?.lowQualityReplyCount),
+        repeatedTextGroups: asNumber(botShill?.repeatedTextGroups),
+      },
+    }),
+    factorFromRaw({
+      label: "Phishing/drainer links",
+      category: "phishing",
+      impact: riskyLinks && riskyLinks > 0 ? 88 : 8,
+      severity: riskyLinks && riskyLinks > 0 ? "critical" : "low",
+      detail: `${riskyLinks ?? 0} risky claim, airdrop, connect-wallet, shortened or drainer-like link${riskyLinks === 1 ? "" : "s"} found.`,
+      sourceLabel: "Social provider",
+      meta: { riskyLinks },
+    }),
+  );
+
+  if (account) {
+    factors.push(
+      factorFromRaw({
+        label: "Account age and followers",
+        category: "social_identity",
+        impact: createdAt && Date.parse(createdAt) > Date.now() - 30 * 86_400_000 ? 46 : followerCount !== undefined && followerCount < 250 ? 34 : 10,
+        detail: `Account created ${createdAt ?? "unknown"}; followers ${followerCount === undefined ? "unknown" : followerCount.toLocaleString("en-US")}.`,
+        sourceLabel: "Social provider",
+        meta: { createdAt, followerCount, postCount: asNumber(account.postCount) },
+      }),
+    );
+  }
+
+  if (!providerDataAvailable) {
+    factors.push(
+      factorFromRaw({
+        label: "Social metrics unavailable",
+        category: "source_coverage",
+        impact: 48,
+        severity: "medium",
+        detail: "Provider data is unavailable. Fake follower, engagement or bot scores are not generated.",
+        sourceLabel: "Social provider",
+        meta: {
+          fakeMetricsGenerated: limitations?.fakeMetricsGenerated === true,
+          botScoreStatus: typeof limitations?.botScoreStatus === "string" ? limitations.botScoreStatus : "unavailable",
+        },
+      }),
+    );
+  }
+
+  return factors;
+}
+
+function buildRawFactors(result: AgentResult): ScoreFactor[] {
+  if (result.agent === "onchain") return buildOnchainRawFactors(result);
+  if (result.agent === "social") return buildSocialRawFactors(result);
+
+  return [];
+}
+
+function getSecondaryScores(result: AgentResult): AgentScoreCard["secondaryScores"] {
+  if (result.agent === "social") {
+    const raw = result.rawSignals;
+    const officialConfidence = asNumber(raw?.officialAccountConfidence) ?? 0;
+    const sourceCoverage = nestedRecord(raw, "sourceCoverage");
+    const coverageRisk = asNumber(sourceCoverage?.riskScore) ?? (raw?.providerDataAvailable === true ? 24 : 56);
+    const botShill = nestedRecord(raw, "botShillSummary");
+    const botRisk = asNumber(botShill?.riskScore) ?? (raw?.providerDataAvailable === true ? 34 : 0);
+    const phishing = nestedRecord(raw, "phishingScanner");
+    const riskyLinks = Array.isArray(phishing?.riskyLinks) ? phishing.riskyLinks.length : 0;
+    const trustScore = clampScore(officialConfidence * 70 + (100 - coverageRisk) * 0.3);
+    const hypeRisk = raw?.providerDataAvailable === true ? clampScore(botRisk + riskyLinks * 16) : 0;
+
+    return [
+      {
+        label: "Social Trust",
+        score: trustScore,
+        detail: "Official account match, mutual verification and source coverage.",
+      },
+      {
+        label: "Hype Risk",
+        score: hypeRisk,
+        detail: raw?.providerDataAvailable === true ? "Bot/shill density, hype language and phishing links." : "Unavailable until a social provider returns live engagement data.",
+      },
+    ];
+  }
+
+  if (result.agent === "onchain") {
+    const scoreBreakdown = nestedRecord(result.rawSignals, "scoreBreakdown");
+
+    if (!scoreBreakdown) return undefined;
+
+    return [
+      {
+        label: "Contract Risk",
+        score: clampScore(asNumber(scoreBreakdown.contractSecurity) ?? result.riskScore),
+        detail: "Critical flags, permissions, taxes and sellability.",
+      },
+      {
+        label: "Liquidity Risk",
+        score: clampScore(asNumber(scoreBreakdown.liquidityExit) ?? result.riskScore),
+        detail: "DEX liquidity, LP lock/burn and exit readiness.",
+      },
+      {
+        label: "Holder Risk",
+        score: clampScore(asNumber(scoreBreakdown.holderConcentration) ?? result.riskScore),
+        detail: "Top holder, top 5 and top 10 concentration.",
+      },
+    ];
+  }
+
+  return undefined;
+}
+
 function getScoreKind(agent: AgentResult["agent"]): AgentScoreCard["scoreKind"] {
   if (agent === "portfolio") return "exposure";
   if (agent === "news") return "signal";
@@ -211,13 +611,14 @@ function getScoreKind(agent: AgentResult["agent"]): AgentScoreCard["scoreKind"] 
 }
 
 function resultToCard(result: AgentResult): AgentScoreCard {
-  const factors = result.findings
-    .map((finding) => findingToFactor(result.agent, finding))
+  const rawFactors = buildRawFactors(result);
+  const factors = [...rawFactors, ...result.findings.map((finding) => findingToFactor(result.agent, finding))]
     .sort((left, right) => {
       const severityGap = severityWeight[right.severity] - severityWeight[left.severity];
 
       return severityGap !== 0 ? severityGap : Math.abs(right.impact) - Math.abs(left.impact);
     });
+  const criticalFactors = factors.filter((factor) => factor.severity === "critical" || factor.category === "sellability").slice(0, 4);
 
   return {
     agent: result.agent,
@@ -228,6 +629,8 @@ function resultToCard(result: AgentResult): AgentScoreCard {
     status: result.status,
     summary: result.summary,
     factors,
+    criticalFactors: criticalFactors.length > 0 ? criticalFactors : undefined,
+    secondaryScores: getSecondaryScores(result),
     sources: result.sources,
     missingData: result.missingData,
   };

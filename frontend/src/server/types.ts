@@ -351,6 +351,7 @@ export type ScoreFactor = {
   sourceLabel?: string;
   direction: "risk_increase" | "risk_decrease" | "neutral";
   raw?: unknown;
+  meta?: Record<string, string | number | boolean | null | undefined>;
 };
 
 export type AgentScoreCard = {
@@ -362,6 +363,12 @@ export type AgentScoreCard = {
   status: AgentStatus;
   summary: string;
   factors: ScoreFactor[];
+  criticalFactors?: ScoreFactor[];
+  secondaryScores?: Array<{
+    label: string;
+    score: number;
+    detail: string;
+  }>;
   sources: AgentSource[];
   missingData: AgentMissingData[];
 };

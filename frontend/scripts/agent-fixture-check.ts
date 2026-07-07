@@ -100,6 +100,23 @@ async function runOnchainChecks() {
   assert(honeypot.recommendedAction === "avoid", "Honeypot fixture must recommend avoid.");
   assert(honeypot.riskScore >= 75, "Honeypot fixture must produce critical risk.");
   assert(getRaw<{ simulationOverridesSecurityProvider?: boolean }>(honeypot, "simulationPrecedence").simulationOverridesSecurityProvider === true, "Simulation precedence must be exposed above security provider flags.");
+  const honeypotDecision = runDecisionAgent({ results: [honeypot] });
+  const honeypotReport = buildRiskReport({
+    query: baseInput.contractAddress,
+    requestedChain: "base",
+    normalized: {
+      chain: "base",
+      contractAddress: baseInput.contractAddress,
+      symbol: "HNY",
+      name: "Honeypot Fixture",
+      source: "contract_address",
+    },
+    results: [honeypot, honeypotDecision],
+    decision: honeypotDecision,
+    createdAt: now.toISOString(),
+  });
+  const honeypotCard = honeypotReport.agentCards.find((card) => card.agent === "onchain");
+  assert(honeypotCard?.criticalFactors?.some((factor) => factor.category === "sellability"), "Critical honeypot/cannot-sell override must be exposed at the top of Contract Guard.");
 
   const lowLiquidity = await runOnchainAgent(baseInput, {
     fetchSecurity: async () => cleanSecurity({ lp_holders: [{ address: "0x5555555555555555555555555555555555555555", percent: "0.10", is_contract: "0", is_locked: "0" }] }),
@@ -110,6 +127,27 @@ async function runOnchainChecks() {
   assert(lowLiquidity.recommendedAction === "manual_review" || lowLiquidity.recommendedAction === "avoid", "Low liquidity fixture must not recommend hold.");
   assert(getRaw<{ lockProvider?: { provider?: string } }>(lowLiquidity, "lp").lockProvider?.provider !== undefined, "Liquidity lock provider status must be exposed.");
   assert(getRaw<{ washVolumeSuspicion?: string }>(lowLiquidity, "marketManipulation").washVolumeSuspicion !== undefined, "Market manipulation flags must be exposed.");
+  const lowLiquidityDecision = runDecisionAgent({ results: [lowLiquidity] });
+  const lowLiquidityReport = buildRiskReport({
+    query: baseInput.contractAddress,
+    requestedChain: "base",
+    normalized: {
+      chain: "base",
+      contractAddress: baseInput.contractAddress,
+      symbol: "LOW",
+      name: "Low Liquidity Fixture",
+      source: "contract_address",
+    },
+    results: [lowLiquidity, lowLiquidityDecision],
+    decision: lowLiquidityDecision,
+    createdAt: now.toISOString(),
+  });
+  const lowLiquidityCard = lowLiquidityReport.agentCards.find((card) => card.agent === "onchain");
+  assert(lowLiquidityCard?.secondaryScores?.some((score) => score.label === "Liquidity Risk"), "Contract Guard must expose liquidity subscore.");
+  for (const category of ["liquidity", "taxes", "holder_concentration", "lp_lock", "market_anomaly"] as const) {
+    assert(lowLiquidityCard?.factors.some((factor) => factor.category === category), `Contract Guard breakdown must expose ${category}.`);
+  }
+  assert(lowLiquidityCard?.factors.some((factor) => factor.label === "FDV/liquidity ratio" && typeof factor.meta?.fdvLiquidityRatio === "number"), "FDV/liquidity ratio must be visible with numeric metadata.");
 
   const blueChip = await runOnchainAgent(baseInput, {
     fetchSecurity: async () => cleanSecurity(),
@@ -131,6 +169,23 @@ async function runOnchainChecks() {
   });
   assert(dexOnly.sources.some((source) => source.label === "DexScreener token pairs" && source.status === "connected"), "DEX source must work when security provider is down.");
   assert(dexOnly.sources.some((source) => source.label === "GoPlus token security" && source.status === "unavailable"), "Security provider outage must be visible.");
+  const dexOnlyDecision = runDecisionAgent({ results: [dexOnly] });
+  const dexOnlyReport = buildRiskReport({
+    query: baseInput.contractAddress,
+    requestedChain: "base",
+    normalized: {
+      chain: "base",
+      contractAddress: baseInput.contractAddress,
+      symbol: "DEX",
+      name: "Dex Only Fixture",
+      source: "contract_address",
+    },
+    results: [dexOnly, dexOnlyDecision],
+    decision: dexOnlyDecision,
+    createdAt: now.toISOString(),
+  });
+  const dexOnlyCard = dexOnlyReport.agentCards.find((card) => card.agent === "onchain");
+  assert(dexOnlyCard?.factors.some((factor) => factor.label === "Security provider unavailable"), "Missing GoPlus provider must be visible in Contract Guard.");
 }
 
 const newsFeeds = [
@@ -297,6 +352,21 @@ async function runSocialChecks() {
   assert(getRaw<number>(directX, "officialAccountConfidence") >= 0.75, "Direct official X link with website match must produce high identity confidence.");
   assert(getRaw<{ mutualVerificationScore?: number }>(directX, "mandatorySocialResolver").mutualVerificationScore !== undefined, "Mandatory social resolver report must be exposed.");
   assert(getRaw<{ fakeMetricsGenerated?: boolean }>(directX, "limitations").fakeMetricsGenerated === false, "Social source limitations must state fake metrics are not generated.");
+  const directXDecision = runDecisionAgent({ results: [blueChipLikeResult(), directX] });
+  const directXReport = buildRiskReport({
+    query: "GOAT",
+    requestedChain: "base",
+    normalized: null,
+    results: [blueChipLikeResult(), directX, directXDecision],
+    decision: directXDecision,
+    createdAt: now.toISOString(),
+  });
+  const directXCard = directXReport.agentCards.find((card) => card.agent === "social");
+  assert(directXCard?.secondaryScores?.some((score) => score.label === "Social Trust"), "Social Scout must expose Social Trust subscore.");
+  assert(directXCard?.secondaryScores?.some((score) => score.label === "Hype Risk"), "Social Scout must expose Hype Risk subscore.");
+  for (const label of ["Official account match", "Website/social mutual verification", "Engagement quality", "Bot/shill risk", "Phishing/drainer links", "Account age and followers"]) {
+    assert(directXCard?.factors.some((factor) => factor.label === label), `Social Scout breakdown must expose ${label}.`);
+  }
 
   const symbolOnly = await runSocialAgent(
     { symbol: "GOAT" },
@@ -390,6 +460,17 @@ async function runSocialChecks() {
   assert(getRaw<{ available?: boolean }>(noProvider, "engagement").available === false, "Provider-unavailable fixture must not invent engagement metrics.");
   assert(getRaw<boolean>(noProvider, "providerDataAvailable") === false, "Provider-unavailable fixture must expose missing provider data.");
   assert(getRaw<{ botScoreStatus?: string }>(noProvider, "limitations").botScoreStatus === "unavailable", "Missing comments/replies must make bot score unavailable.");
+  const noProviderDecision = runDecisionAgent({ results: [blueChipLikeResult(), noProvider] });
+  const noProviderReport = buildRiskReport({
+    query: "NOP",
+    requestedChain: "base",
+    normalized: null,
+    results: [blueChipLikeResult(), noProvider, noProviderDecision],
+    decision: noProviderDecision,
+    createdAt: now.toISOString(),
+  });
+  const noProviderCard = noProviderReport.agentCards.find((card) => card.agent === "social");
+  assert(noProviderCard?.factors.some((factor) => factor.label === "Social metrics unavailable" && factor.meta?.fakeMetricsGenerated === false), "Social provider outage must show unavailable metrics without fake bot/follower scores.");
 
   const decision = runDecisionAgent({ results: [blueChipLikeResult(), fakeOfficial] });
   assert(decision.recommendedAction === "watch" || decision.recommendedAction === "manual_review" || decision.recommendedAction === "avoid", "Decision Agent must include Social Agent as a supporting weighted signal.");
