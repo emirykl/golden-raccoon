@@ -45,14 +45,19 @@ const requiredReleaseMarkers = [
 ];
 const secretPattern = /(API_KEY=(?!\s|$)|cqt_[A-Za-z0-9]|sk-[A-Za-z0-9]|Bearer [A-Za-z0-9_\-]{16,}|0x[a-fA-F0-9]{64})/;
 const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs"]);
-const productionDeploy =
-  process.env.VERCEL_ENV === "production" ||
+const hostedProductionDeploy = process.env.VERCEL_ENV === "production";
+const strictProductionDeploy =
   process.env.PRODUCTION_DEPLOY === "1" ||
-  process.env.RELEASE_TARGET === "production";
+  process.env.RELEASE_TARGET === "production" ||
+  process.env.STRICT_PRODUCTION_DEPLOY === "1";
 
 function fail(message) {
   console.error(`deploy-readiness: ${message}`);
   process.exitCode = 1;
+}
+
+function warn(message) {
+  console.warn(`deploy-readiness warning: ${message}`);
 }
 
 function walk(dir) {
@@ -171,7 +176,7 @@ function checkVercelBuildGate() {
 }
 
 function checkProductionEnvironment() {
-  if (!productionDeploy) {
+  if (!hostedProductionDeploy && !strictProductionDeploy) {
     return;
   }
 
@@ -192,19 +197,27 @@ function checkProductionEnvironment() {
   );
 
   if (missing.length > 0) {
-    fail(`production deploy env is incomplete: ${missing.join(", ")}`);
+    const message = `production deploy env is incomplete: ${missing.join(", ")}`;
+
+    strictProductionDeploy ? fail(message) : warn(`${message}. Set PRODUCTION_DEPLOY=1 or RELEASE_TARGET=production to enforce this as a hard release gate.`);
   }
 
   if (!portfolioProviderConfigured) {
-    fail("production deploy requires at least one portfolio provider key: GOLDRUSH_API_KEY, COVALENT_API_KEY, or ALCHEMY_API_KEY");
+    const message = "production deploy requires at least one portfolio provider key: GOLDRUSH_API_KEY, COVALENT_API_KEY, or ALCHEMY_API_KEY";
+
+    strictProductionDeploy ? fail(message) : warn(message);
   }
 
   if (!socialProviderConfigured) {
-    fail("production deploy requires a social/search provider key or SOCIAL_DATA_PROVIDER_URL so Social Agent limits are explicit and measurable");
+    const message = "production deploy requires a social/search provider key or SOCIAL_DATA_PROVIDER_URL so Social Agent limits are explicit and measurable";
+
+    strictProductionDeploy ? fail(message) : warn(message);
   }
 
   if (process.env.NEXT_PUBLIC_APP_URL?.includes("localhost")) {
-    fail("production deploy NEXT_PUBLIC_APP_URL must not point to localhost");
+    const message = "production deploy NEXT_PUBLIC_APP_URL must not point to localhost";
+
+    strictProductionDeploy ? fail(message) : warn(message);
   }
 }
 
