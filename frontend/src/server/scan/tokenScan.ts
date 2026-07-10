@@ -1,5 +1,6 @@
 import type { AgentFinding, AgentResult, RiskBreakdownItem, RiskLevel, TokenScanResult } from "@/server/types";
 import { runDecisionAgent } from "@/server/agents/decision";
+import { buildExecutionPreview } from "@/server/agents/execution";
 import { runPortfolioAgent } from "@/server/agents/portfolio";
 import { runAgentSafely, scoreToRiskLevel } from "@/server/agents/shared";
 import { runNewsAgent } from "@/server/agents/news";
@@ -258,6 +259,16 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
     },
   });
   const overallRiskScore = decisionResult.score;
+  const executionPreview = buildExecutionPreview({
+    action: decisionResult.recommendedAction,
+    fromToken: normalized.symbol ?? "TOKEN",
+    toToken: "USDC",
+    percent: decisionResult.recommendedAction === "reduce_exposure" || decisionResult.recommendedAction === "swap_to_stable" ? 30 : 0,
+    riskScore: overallRiskScore,
+    network: normalized.chain,
+    quoteAvailable: false,
+    simulationStatus: overallRiskScore >= 50 ? "pending" : "not_required",
+  });
   const combinedFindings = [...decisionResult.findings, ...onchainResult.findings, ...newsResult.findings, ...socialResult.findings, ...portfolioResult.findings];
   const riskBreakdown = combinedFindings.map(mapFindingToBreakdown);
 
@@ -302,6 +313,7 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
     results: [onchainResult, newsResult, socialResult, portfolioResult, decisionResult],
     decision: decisionResult,
     dataQuality,
+    executionPreview,
     createdAt: scannedAt,
   });
 

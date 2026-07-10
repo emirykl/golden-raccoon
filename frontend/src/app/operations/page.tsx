@@ -15,15 +15,24 @@ export default function OperationsPage() {
             Production operations
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-white/58">
-            Deploy only after readiness checks, Supabase migration verification, production smoke, rollback review, and first-day monitoring are complete.
+            Deploy only after readiness checks, Supabase migration verification, AI Risk Report smoke, approval-only execution review, rollback review,
+            and first-day monitoring are complete.
           </p>
           <div className="mt-7 rounded-lg border border-white/10 bg-white/6 p-5">
             <div className="text-sm font-semibold text-white">Required gates</div>
             <div className="mt-4 grid gap-3 text-sm text-white/64">
               <code className="rounded-md bg-black/35 px-3 py-2">npm run deploy:check</code>
+              <code className="rounded-md bg-black/35 px-3 py-2">npm run test:agents --prefix frontend</code>
               <code className="rounded-md bg-black/35 px-3 py-2">SMOKE_BASE_URL=https://your-production-domain.example npm run smoke</code>
               <code className="rounded-md bg-black/35 px-3 py-2">MONITOR_BASE_URL=https://your-production-domain.example npm run monitor:production</code>
             </div>
+          </div>
+          <div className="mt-4 rounded-lg border border-[#d9a441]/25 bg-[#d9a441]/8 p-5">
+            <div className="text-sm font-semibold text-[#f2c86d]">V1 execution rule</div>
+            <p className="mt-2 text-sm leading-6 text-white/58">
+              V1 can show an execution preview, but it cannot auto-buy, cannot server-sign, and cannot treat missing quote or pending simulation as an
+              executable transaction.
+            </p>
           </div>
         </div>
 

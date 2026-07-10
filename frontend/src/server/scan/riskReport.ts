@@ -1008,9 +1008,9 @@ function conservativeSummary(report: {
 }) {
   const riskText = report.buyRisk >= 75 ? "kritik" : report.buyRisk >= 50 ? "yuksek" : report.buyRisk >= 25 ? "izlenebilir" : "dusuk";
   const confidenceText = Math.round(report.confidence * 100);
-  const mainReason = report.topReasons[0] ? ` Ana sebep: ${report.topReasons[0]}` : "";
+  const mainReason = report.topReasons[0] ? ` Ana sebep: ${report.topReasons[0]}` : " Ana sebep: kritik sinyal yoksa bile eksik veri confidence'i sinirlar.";
 
-  return `${report.symbol} icin alim riski ${riskText} (%${report.buyRisk}). Confidence %${confidenceText}. ${report.decisionSummary}${mainReason}`;
+  return `${report.symbol} icin buy risk %${report.buyRisk} ve seviye ${riskText}. Confidence %${confidenceText}. ${mainReason}`;
 }
 
 export function buildRiskReport(input: {
@@ -1020,6 +1020,7 @@ export function buildRiskReport(input: {
   results: AgentResult[];
   decision: AgentResult;
   dataQuality?: SourceDataQuality;
+  executionPreview?: RiskReport["executionPreview"];
   createdAt?: string;
 }): RiskReport {
   const createdAt = input.createdAt ?? new Date().toISOString();
@@ -1049,6 +1050,7 @@ export function buildRiskReport(input: {
     agentCards: input.results.map(resultToCard),
     sources: getSources(input.results),
     missingData: getMissingData(input.results),
+    executionPreview: input.executionPreview,
     createdAt,
   };
   const parsed = validateRiskReport(report);

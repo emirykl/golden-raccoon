@@ -2,11 +2,12 @@
 
 import { Lock } from "lucide-react";
 import { useState } from "react";
-import type { RiskReportVerdict, ScoreFactor, TokenScanResult } from "@/server/types";
+import type { RiskReportVerdict, ScoreFactor, TokenScanResult, TransactionPreview } from "@/server/types";
 import { NoDataState } from "@/components/NoDataState";
 import { RiskBreakdownCard } from "@/components/RiskBreakdownCard";
 
-const checks = ["Contract Guard", "Social Scout", "News Oracle", "Decision Core"];
+const checks = ["Contract Guard", "Social Scout", "News Oracle", "Portfolio Keeper", "Decision Core", "Execution Pilot"];
+const loadingSteps = ["Contract Guard", "Social Scout", "News Oracle", "Portfolio Keeper", "Decision Core"];
 const chains = [
   { value: "base", label: "Base" },
   { value: "goat", label: "GOAT" },
@@ -84,19 +85,36 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
   const [walletAddress, setWalletAddress] = useState("");
   const [scan, setScan] = useState<TokenScanResult | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const report = scan?.riskReport;
   const normalizedInput = report?.input ?? scan?.normalizedInput;
+  const executionPreview = report?.executionPreview as TransactionPreview | undefined;
+  const decisionCard = report?.agentCards.find((card) => card.agent === "decision");
+  const whatWouldChange = decisionCard?.factors.find((factor) => factor.label === "What would change this decision");
 
   async function runScan() {
     setIsScanning(true);
-    const response = await fetch("/api/scan/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, chain, walletAddress: walletAddress.trim() || undefined }),
-    });
-    const data = (await response.json()) as TokenScanResult;
-    setScan(data);
-    setIsScanning(false);
+    setScanError(null);
+
+    try {
+      const response = await fetch("/api/scan/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, chain, walletAddress: walletAddress.trim() || undefined }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Scan request failed. Check the input and try again.");
+      }
+
+      const data = (await response.json()) as TokenScanResult;
+      setScan(data);
+    } catch (error) {
+      setScan(null);
+      setScanError(error instanceof Error ? error.message : "Scan failed.");
+    } finally {
+      setIsScanning(false);
+    }
   }
 
   return (
@@ -104,7 +122,7 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
       <section className="grid gap-5 lg:grid-cols-[.9fr_1.1fr]">
         <div className="glass-panel rounded-[28px] p-6">
           <div className="text-sm uppercase tracking-[0.18em] text-[#d9a441]">Token scan</div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight">Token scan</h1>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight">AI Risk Report</h1>
           <div className="mt-7 grid gap-3 lg:grid-cols-[9rem_1fr_auto]">
             <select
               value={chain}
@@ -139,7 +157,7 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
             className="mt-3 h-12 w-full rounded-full border border-white/10 bg-white/7 px-5 text-sm text-white outline-none transition placeholder:text-white/30 focus:border-[#d9a441]/60"
           />
           <div className="mt-4 rounded-2xl border border-[#d9a441]/20 bg-[#d9a441]/8 p-4 text-sm text-white/54">
-            Deep scan: x402 premium
+            V1 scan uses live provider data when available and marks unavailable metrics instead of inventing them.
           </div>
         </div>
         <div className="glass-panel rounded-[28px] p-6">
@@ -155,17 +173,36 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
         </div>
       </section>
 
+      {isScanning ? (
+        <section className="glass-panel rounded-[28px] p-6">
+          <div className="text-sm uppercase tracking-[0.18em] text-[#d9a441]">Scanning</div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-5">
+            {loadingSteps.map((step, index) => (
+              <div key={step} className="rounded-2xl border border-[#d9a441]/20 bg-[#d9a441]/8 p-4">
+                <div className="text-xs text-white/42">Step {index + 1}</div>
+                <div className="mt-1 text-sm font-semibold">{step}</div>
+                <div className="mt-3 h-1 rounded-full bg-white/10">
+                  <div className="h-1 w-2/3 animate-pulse rounded-full bg-[#d9a441]" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {scanError ? <NoDataState title="Scan failed" detail={scanError} action="No result was saved. Fix the input or retry with a supported contract/DexScreener URL." /> : null}
+
       {scan ? (
         <section className="grid gap-5 xl:grid-cols-[.85fr_1.15fr]">
           <div className="space-y-5">
             <div className={`rounded-[28px] border p-6 ${riskTone(report?.buyRisk ?? scan.overallRiskScore)}`}>
               <div className="text-sm uppercase tracking-[0.18em] opacity-75">AI Risk Report</div>
-              <div className="mt-4 flex items-end justify-between gap-4">
+              <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <h2 className="text-4xl font-semibold">{scan.symbol}</h2>
                   <div className="mt-2 text-sm capitalize opacity-70">{verdictLabel(report?.verdict)}</div>
                 </div>
-                <div className="grid grid-cols-2 gap-3 text-right">
+                <div className="grid grid-cols-2 gap-3 text-left sm:text-right">
                   <div>
                     <div className="text-5xl font-semibold">{report?.buyRisk ?? scan.overallRiskScore}%</div>
                     <div className="text-xs uppercase tracking-[0.2em] opacity-60">Buy risk</div>
@@ -279,6 +316,41 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
                 ))}
               </div>
             </div>
+            {whatWouldChange ? (
+              <div className="glass-panel rounded-[28px] p-6">
+                <h2 className="text-xl font-semibold">What would change this decision</h2>
+                <div className="mt-3 rounded-2xl bg-white/6 p-4 text-sm leading-6 text-white/58">{whatWouldChange.detail}</div>
+              </div>
+            ) : null}
+            {executionPreview ? (
+              <div className="glass-panel rounded-[28px] p-6">
+                <div className="text-sm uppercase tracking-[0.18em] text-[#d9a441]">Execution preview</div>
+                <h2 className="mt-2 text-xl font-semibold">{executionPreview.title}</h2>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  {[
+                    ["Suggested action", executionPreview.action?.replaceAll("_", " ") ?? "no action"],
+                    ["Trade required", executionPreview.action === "swap" || executionPreview.action === "reduce_exposure" ? "yes" : "no"],
+                    ["Quote status", executionPreview.quote?.status ?? "not required"],
+                    ["Simulation status", executionPreview.simulation?.status ?? "unavailable"],
+                    ["Wallet approval", executionPreview.requiresApproval ? "required" : "not prepared"],
+                    ["Server can sign", executionPreview.audit?.serverCanSign ? "yes" : "no"],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-2xl bg-white/6 p-4">
+                      <div className="text-sm text-white/42">{label}</div>
+                      <div className="mt-1 text-lg font-semibold capitalize">{value}</div>
+                    </div>
+                  ))}
+                </div>
+                {executionPreview.blockedReason ? (
+                  <div className="mt-4 rounded-2xl border border-orange-300/25 bg-orange-400/10 p-4 text-sm leading-6 text-orange-100">
+                    Executable transaction unavailable: {executionPreview.blockedReason}
+                  </div>
+                ) : null}
+                <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm leading-6 text-white/58">
+                  Auto execute is off. The server cannot sign. Any real blockchain action requires explicit wallet approval.
+                </div>
+              </div>
+            ) : null}
             {scan.market ? (
               <div className="glass-panel rounded-[28px] p-6">
                 <div className="flex items-start justify-between gap-4">
@@ -365,6 +437,11 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
                     </div>
                   ))}
                 </div>
+                {scan.dataQuality.mockSources > 0 ? (
+                  <div className="mt-4 rounded-2xl border border-orange-300/25 bg-orange-400/10 p-4 text-sm leading-6 text-orange-100">
+                    Demo/mock data is present and explicitly counted here. It must not be treated as live production evidence.
+                  </div>
+                ) : null}
               </section>
             ) : null}
             <section className="glass-panel rounded-[28px] p-6">

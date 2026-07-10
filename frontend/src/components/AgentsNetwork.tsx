@@ -147,7 +147,7 @@ export function AgentsNetwork() {
           <div className="text-sm uppercase tracking-[0.2em] text-[#d9a441]">Agents</div>
           <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">Agent command center</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-white/50">
-            Run each specialist agent independently, inspect findings, then combine results through the Decision Agent.
+            Run each specialist agent independently, inspect findings, and verify the same signals that feed the V1 AI Risk Report.
           </p>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">

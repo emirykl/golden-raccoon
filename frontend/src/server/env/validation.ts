@@ -21,6 +21,7 @@ const publicEnvKeys = ["NEXT_PUBLIC_GOAT_RPC_URL"] as const;
 
 export function getEnvHealth() {
   const goPlusReady = Boolean(process.env.GOPLUS_API_KEY || (process.env.GOPLUS_APP_KEY && process.env.GOPLUS_APP_SECRET));
+  const portfolioReady = Boolean(process.env.GOAT_RPC_URL || process.env.GOLDRUSH_API_KEY || process.env.COVALENT_API_KEY || process.env.ALCHEMY_API_KEY);
   const checks: EnvCheck[] = [
     ...serverEnvKeys.map((key) => ({
       key,
@@ -37,8 +38,10 @@ export function getEnvHealth() {
   ];
 
   const configuredLiveSources = [
+    Boolean(process.env.GOAT_RPC_URL),
     Boolean(process.env.GOLDRUSH_API_KEY),
     Boolean(process.env.COVALENT_API_KEY),
+    Boolean(process.env.ALCHEMY_API_KEY),
     goPlusReady,
   ].filter(Boolean);
 
@@ -48,7 +51,7 @@ export function getEnvHealth() {
     status: configuredLiveSources.length > 0 ? "partial" : "unavailable",
     mockFallbacksEnabled: false,
     realDataReadiness: {
-      portfolio: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? process.env.ALCHEMY_API_KEY),
+      portfolio: portfolioReady,
       onchain: goPlusReady,
       news: true,
       social: true,
@@ -62,7 +65,7 @@ export function getEnvHealth() {
 }
 
 export function getAgentReadiness() {
-  const portfolioReady = Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? process.env.ALCHEMY_API_KEY);
+  const portfolioReady = Boolean(process.env.GOAT_RPC_URL || process.env.GOLDRUSH_API_KEY || process.env.COVALENT_API_KEY || process.env.ALCHEMY_API_KEY);
   const onchainReady = Boolean(process.env.GOPLUS_API_KEY || (process.env.GOPLUS_APP_KEY && process.env.GOPLUS_APP_SECRET));
   const newsReady = true;
   const socialProviderReady = Boolean(
@@ -75,7 +78,7 @@ export function getAgentReadiness() {
   return {
     portfolio: {
       status: portfolioReady ? "partial" : "unavailable",
-      detail: portfolioReady ? "At least one live portfolio provider is configured." : "No live portfolio balance provider is configured.",
+      detail: portfolioReady ? "GOAT RPC or at least one live portfolio provider is configured." : "No live portfolio balance provider is configured.",
     },
     onchain: {
       status: onchainReady ? "partial" : "unavailable",

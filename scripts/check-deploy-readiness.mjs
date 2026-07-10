@@ -188,7 +188,7 @@ function checkProductionEnvironment() {
   ];
   const missing = requiredEnv.filter((key) => !process.env[key]);
   const goPlusConfigured = Boolean(process.env.GOPLUS_API_KEY || (process.env.GOPLUS_APP_KEY && process.env.GOPLUS_APP_SECRET));
-  const portfolioProviderConfigured = Boolean(process.env.GOLDRUSH_API_KEY || process.env.COVALENT_API_KEY || process.env.ALCHEMY_API_KEY);
+  const portfolioProviderConfigured = Boolean(process.env.GOAT_RPC_URL || process.env.GOLDRUSH_API_KEY || process.env.COVALENT_API_KEY || process.env.ALCHEMY_API_KEY);
   const socialProviderConfigured = Boolean(
     process.env.SOCIAL_DATA_PROVIDER_URL ||
       process.env.APIFY_TOKEN ||
@@ -209,7 +209,7 @@ function checkProductionEnvironment() {
   }
 
   if (!portfolioProviderConfigured) {
-    const message = "production deploy requires at least one portfolio provider key: GOLDRUSH_API_KEY, COVALENT_API_KEY, or ALCHEMY_API_KEY";
+    const message = "production deploy requires GOAT_RPC_URL or at least one portfolio provider key: GOLDRUSH_API_KEY, COVALENT_API_KEY, or ALCHEMY_API_KEY";
 
     strictProductionDeploy ? fail(message) : warn(message);
   }

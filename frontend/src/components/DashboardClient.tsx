@@ -158,7 +158,7 @@ export function DashboardClient() {
     const response = await fetch("/api/scan/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: scanQuery.trim(), chain: selectedNetwork.id }),
+      body: JSON.stringify({ query: scanQuery.trim(), chain: selectedNetwork.id, walletAddress: address }),
     });
     const data = (await response.json()) as TokenScanResult;
 
