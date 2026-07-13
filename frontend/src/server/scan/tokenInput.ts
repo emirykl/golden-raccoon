@@ -50,6 +50,11 @@ type DexScreenerPairResponse = {
       name?: string;
       symbol?: string;
     };
+    quoteToken?: {
+      address?: string;
+      name?: string;
+      symbol?: string;
+    };
     info?: {
       websites?: Array<{
         label?: string;
@@ -61,6 +66,19 @@ type DexScreenerPairResponse = {
       }>;
     };
   }> | null;
+};
+
+type DexScreenerPair = NonNullable<DexScreenerPairResponse["pairs"]>[number];
+
+const dexChainAliases: Record<string, string> = {
+  bnb: "bsc",
+  "bnb chain": "bsc",
+  "bsc-mainnet": "bsc",
+  eth: "ethereum",
+  "eth-mainnet": "ethereum",
+  "base-mainnet": "base",
+  "arbitrum-mainnet": "arbitrum",
+  "matic-mainnet": "polygon",
 };
 
 function getPairAgeDays(pairCreatedAt?: number) {
@@ -141,6 +159,75 @@ async function resolveDexScreenerPair(chain: string, pairAddress: string): Promi
   };
 }
 
+function normalizeDexChain(chain?: string) {
+  const normalized = (chain ?? "").trim().toLowerCase();
+
+  return dexChainAliases[normalized] ?? normalized;
+}
+
+function getMatchingToken(pair: DexScreenerPair, contractAddress: string) {
+  const normalizedAddress = contractAddress.toLowerCase();
+
+  if (pair.baseToken?.address?.toLowerCase() === normalizedAddress) return pair.baseToken;
+  if (pair.quoteToken?.address?.toLowerCase() === normalizedAddress) return pair.quoteToken;
+
+  return null;
+}
+
+function pairLiquidity(pair: DexScreenerPair) {
+  return pair.liquidity?.usd ?? 0;
+}
+
+async function resolveContractAddress(contractAddress: string, requestedChain?: string): Promise<NormalizedTokenInput | null> {
+  const response = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(contractAddress)}`, {
+    next: { revalidate: 60 * 5 },
+  });
+
+  if (!response.ok) return null;
+
+  const payload = (await response.json()) as DexScreenerPairResponse;
+  const exactMatches = (payload.pairs ?? []).filter((pair) => Boolean(getMatchingToken(pair, contractAddress)));
+
+  if (exactMatches.length === 0) return null;
+
+  const normalizedRequestedChain = normalizeDexChain(requestedChain);
+  const requestedChainMatches = exactMatches.filter((pair) => normalizeDexChain(pair.chainId) === normalizedRequestedChain);
+  const candidates = requestedChainMatches.length > 0 ? requestedChainMatches : exactMatches;
+  const pair = [...candidates].sort((left, right) => pairLiquidity(right) - pairLiquidity(left))[0];
+  const token = getMatchingToken(pair, contractAddress);
+
+  if (!pair || !token) return null;
+
+  const twitterUrl = pair.info?.socials?.find((social) => social.type?.toLowerCase() === "twitter" || social.type?.toLowerCase() === "x")?.url;
+  const telegramUrl = pair.info?.socials?.find((social) => social.type?.toLowerCase() === "telegram")?.url;
+
+  return {
+    chain: normalizeDexChain(pair.chainId) || normalizeDexChain(requestedChain) || "base",
+    contractAddress,
+    pairAddress: pair.pairAddress,
+    symbol: token.symbol,
+    name: token.name,
+    links: {
+      websiteUrl: pair.info?.websites?.[0]?.url,
+      twitterUrl,
+      telegramUrl,
+    },
+    market: {
+      pairAddress: pair.pairAddress,
+      dexId: pair.dexId,
+      pairUrl: pair.url,
+      priceUsd: pair.priceUsd ? Number(pair.priceUsd) : undefined,
+      liquidityUsd: pair.liquidity?.usd,
+      volume24hUsd: pair.volume?.h24,
+      fdvUsd: pair.fdv,
+      marketCapUsd: pair.marketCap,
+      priceChange24hPercent: pair.priceChange?.h24,
+      pairAgeDays: getPairAgeDays(pair.pairCreatedAt),
+    },
+    source: "contract_address",
+  };
+}
+
 export async function normalizeTokenInput(query: string, chain?: string): Promise<NormalizedTokenInput | null> {
   const trimmed = query.trim();
   const dexScreenerUrl = parseDexScreenerUrl(trimmed);
@@ -162,11 +249,9 @@ export async function normalizeTokenInput(query: string, chain?: string): Promis
   }
 
   if (isAddress(trimmed)) {
-    return {
-      chain: chain || "base",
-      contractAddress: trimmed,
-      source: "contract_address",
-    };
+    const resolved = await resolveContractAddress(trimmed, chain).catch(() => null);
+
+    return resolved ?? { chain: normalizeDexChain(chain) || "base", contractAddress: trimmed, source: "contract_address" };
   }
 
   return null;

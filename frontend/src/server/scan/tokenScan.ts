@@ -8,6 +8,7 @@ import { runOnchainAgent } from "@/server/agents/onchain";
 import { runSocialAgent } from "@/server/agents/social";
 import { buildRiskReport, createRiskReportInput } from "@/server/scan/riskReport";
 import { normalizeTokenInput } from "@/server/scan/tokenInput";
+import { isVerifiedEstablishedAsset } from "@/server/portfolio/tokenRegistry";
 
 function riskLevel(score: number): RiskLevel {
   return scoreToRiskLevel(score);
@@ -253,6 +254,7 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
       mode: "token_scan",
       walletAddress,
       tokenSymbol: normalized.symbol,
+      establishedAsset: isVerifiedEstablishedAsset(normalized.symbol, normalized.chain, normalized.contractAddress),
       userAlreadyOwnsToken: Boolean(walletAddress && targetExposure > 0),
       holdingAllocationPercent: targetExposure,
       stableReservePercent: typeof stableReserve?.stableReservePercent === "number" ? stableReserve.stableReservePercent : undefined,

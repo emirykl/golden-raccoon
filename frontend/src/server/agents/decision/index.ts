@@ -20,6 +20,7 @@ type DecisionContext = {
   stableReservePercent?: number;
   walletAddress?: string;
   tokenSymbol?: string;
+  establishedAsset?: boolean;
 };
 
 type ExecutionReadiness = {
@@ -173,6 +174,20 @@ function getContextAwareWeights(results: AgentResult[], context: ReturnType<type
     weights.execution = 0.03;
   }
 
+  if (context.mode === "token_scan" && context.establishedAsset) {
+    weights.onchain = 0.8;
+    weights.news = 0.08;
+    weights.social = 0.06;
+    weights.portfolio = hasAgent(results, "portfolio") ? 0.04 : 0;
+    weights.execution = 0.02;
+
+    for (const agent of ["news", "social"] as const) {
+      const result = getResult(results, agent);
+
+      if (result && !result.sources.some((source) => source.status === "connected")) weights[agent] = 0;
+    }
+  }
+
   if (context.userAlreadyOwnsToken || context.mode === "holding_review" || context.mode === "portfolio_review") {
     weights.onchain = 0.45;
     weights.portfolio = 0.25;
@@ -248,8 +263,11 @@ function getSourceCoverage(results: AgentResult[]) {
   };
 }
 
-function applyCoveragePenalty(score: number, results: AgentResult[]) {
+function applyCoveragePenalty(score: number, results: AgentResult[], context: ReturnType<typeof inferContext>) {
   const coverage = getSourceCoverage(results);
+  const onchainHasCoverage = getResult(results, "onchain")?.sources.some((source) => source.status === "connected");
+
+  if (context.establishedAsset && onchainHasCoverage) return score;
 
   if (results.length === 0 || coverage.total === 0 || coverage.connected === 0) {
     return clampScore(Math.max(score, 72));
@@ -799,7 +817,7 @@ export function runDecisionAgent(input: DecisionInput): AgentResult {
   const context = inferContext(results, input.context);
   const coverage = getSourceCoverage(results);
   const weightedScore = getWeightedScore(results, context);
-  const score = applyCoveragePenalty(weightedScore.score, results);
+  const score = applyCoveragePenalty(weightedScore.score, results, context);
   const blockers = [
     ...collectCriticalBlockers(results, coverage, input.executionReadiness),
     ...invalidMessages.map((message) => ({

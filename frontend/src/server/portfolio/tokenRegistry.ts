@@ -40,6 +40,9 @@ const knownTokens: KnownToken[] = [
     name: "Ethereum",
     tokenClass: "native",
     coingeckoId: "ethereum",
+    addresses: {
+      bsc: "0x2170ed0880ac9a755fd29b2688956bd959f933f8",
+    },
   },
   {
     symbol: "WETH",
@@ -133,6 +136,24 @@ export function isEstablishedLargeCap(symbol?: string | null) {
   const normalizedSymbol = symbol?.trim().toUpperCase();
 
   return Boolean(normalizedSymbol && establishedLargeCapSymbols.has(normalizedSymbol));
+}
+
+export function isVerifiedEstablishedAsset(symbol?: string | null, chain?: string, tokenAddress?: string) {
+  const normalizedSymbol = symbol?.trim().toUpperCase();
+  const token = getKnownToken(normalizedSymbol);
+
+  if (!normalizedSymbol || !isEstablishedLargeCap(normalizedSymbol) || isKnownHighVolatilitySymbol(normalizedSymbol)) {
+    return false;
+  }
+
+  if (!chain || !tokenAddress || !token?.addresses) {
+    return false;
+  }
+
+  const normalizedChain = chain.toLowerCase();
+  const normalizedAddress = tokenAddress.toLowerCase();
+
+  return Object.entries(token.addresses).some(([chainKey, address]) => normalizedChain.includes(chainKey) && normalizedAddress === address);
 }
 
 export function isKnownHighVolatilitySymbol(symbol?: string | null) {
