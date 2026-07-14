@@ -2,19 +2,22 @@ import { createHash } from "node:crypto";
 import { isAddress } from "viem";
 import type { AgentFinding, AgentResult, AgentSource } from "@/server/types";
 import { buildAgentResult } from "@/server/agents/shared";
+import { getScanNetwork, normalizeScanNetworkId } from "@/lib/scanNetworks";
+import type { ScanNetwork } from "@/lib/scanNetworks";
 
 type OnchainAgentInput = {
   chain?: string;
   contractAddress?: string;
 };
 
-type ChainConfig = {
-  goPlusChainId?: string;
-  dexScreenerChainId: string;
-  covalentChainId?: string;
-};
-
 type GoPlusTokenSecurity = Record<string, unknown>;
+
+type ContractCodeCheck = {
+  checked: boolean;
+  deployed?: boolean;
+  bytecodeSize?: number;
+  detail: string;
+};
 
 type GoPlusTokenSecurityResponse = {
   code?: number;
@@ -120,39 +123,16 @@ type OnchainAgentProviders = {
   fetchSecurity?: (chainId: string, contractAddress: string) => Promise<GoPlusTokenSecurity | undefined>;
   fetchPairs?: (chainId: string, contractAddress: string) => Promise<DexScreenerPair[] | undefined>;
   fetchCreatorActivity?: (
-    chainConfig: ChainConfig,
+    chainConfig: ScanNetwork,
     security: GoPlusTokenSecurity | undefined,
     contractAddress: string,
     pairs: DexScreenerPair[] | undefined,
   ) => Promise<CreatorActivity | undefined>;
-};
-
-const chainConfigs: Record<string, ChainConfig> = {
-  ethereum: { goPlusChainId: "1", dexScreenerChainId: "ethereum", covalentChainId: "eth-mainnet" },
-  eth: { goPlusChainId: "1", dexScreenerChainId: "ethereum", covalentChainId: "eth-mainnet" },
-  "eth-mainnet": { goPlusChainId: "1", dexScreenerChainId: "ethereum", covalentChainId: "eth-mainnet" },
-  bsc: { goPlusChainId: "56", dexScreenerChainId: "bsc", covalentChainId: "bsc-mainnet" },
-  bnb: { goPlusChainId: "56", dexScreenerChainId: "bsc", covalentChainId: "bsc-mainnet" },
-  "bnb chain": { goPlusChainId: "56", dexScreenerChainId: "bsc", covalentChainId: "bsc-mainnet" },
-  "bsc-mainnet": { goPlusChainId: "56", dexScreenerChainId: "bsc", covalentChainId: "bsc-mainnet" },
-  arbitrum: { goPlusChainId: "42161", dexScreenerChainId: "arbitrum", covalentChainId: "arbitrum-mainnet" },
-  "arbitrum-mainnet": { goPlusChainId: "42161", dexScreenerChainId: "arbitrum", covalentChainId: "arbitrum-mainnet" },
-  polygon: { goPlusChainId: "137", dexScreenerChainId: "polygon", covalentChainId: "matic-mainnet" },
-  "matic-mainnet": { goPlusChainId: "137", dexScreenerChainId: "polygon", covalentChainId: "matic-mainnet" },
-  base: { goPlusChainId: "8453", dexScreenerChainId: "base", covalentChainId: "base-mainnet" },
-  "base-mainnet": { goPlusChainId: "8453", dexScreenerChainId: "base", covalentChainId: "base-mainnet" },
-  linea: { goPlusChainId: "59144", dexScreenerChainId: "linea", covalentChainId: "linea-mainnet" },
-  "linea-mainnet": { goPlusChainId: "59144", dexScreenerChainId: "linea", covalentChainId: "linea-mainnet" },
-  optimism: { goPlusChainId: "10", dexScreenerChainId: "optimism", covalentChainId: "optimism-mainnet" },
-  "optimism-mainnet": { goPlusChainId: "10", dexScreenerChainId: "optimism", covalentChainId: "optimism-mainnet" },
-  goat: { dexScreenerChainId: "goat" },
-  "goat-mainnet": { dexScreenerChainId: "goat" },
-  avalanche: { goPlusChainId: "43114", dexScreenerChainId: "avalanche", covalentChainId: "avalanche-mainnet" },
-  "avalanche-mainnet": { goPlusChainId: "43114", dexScreenerChainId: "avalanche", covalentChainId: "avalanche-mainnet" },
+  fetchContractCode?: (rpcUrl: string, contractAddress: string) => Promise<ContractCodeCheck>;
 };
 
 function normalizeChain(chain?: string) {
-  return (chain || "goat").trim().toLowerCase();
+  return normalizeScanNetworkId(chain || "goat");
 }
 
 function isFlagged(value?: string) {
@@ -337,8 +317,47 @@ async function fetchDexScreenerPairs(chainId: string, contractAddress: string) {
   return (await response.json()) as DexScreenerPair[];
 }
 
+async function fetchContractCode(rpcUrl: string, contractAddress: string): Promise<ContractCodeCheck> {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [contractAddress, "latest"] }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`RPC bytecode request failed with ${response.status}`);
+  }
+
+  const payload = (await response.json()) as { result?: string; error?: { message?: string } };
+  const code = payload.result;
+
+  if (!code || !/^0x[0-9a-f]*$/i.test(code)) {
+    throw new Error(payload.error?.message || "RPC returned invalid bytecode data");
+  }
+
+  const bytecodeSize = Math.max(0, (code.length - 2) / 2);
+  const deployed = bytecodeSize > 0;
+
+  return {
+    checked: true,
+    deployed,
+    bytecodeSize,
+    detail: deployed ? `${bytecodeSize.toLocaleString("en-US")} bytes of deployed bytecode found.` : "No deployed bytecode exists at this address on the selected network.",
+  };
+}
+
+function getContractRpcUrl(network: ScanNetwork) {
+  if (network.id === "goat") {
+    return process.env.GOAT_RPC_URL || process.env.NEXT_PUBLIC_GOAT_RPC_URL;
+  }
+
+  return network.rpcUrl;
+}
+
 async function fetchCreatorActivity(
-  chainConfig: ChainConfig,
+  chainConfig: ScanNetwork,
   security: GoPlusTokenSecurity | undefined,
   contractAddress: string,
   pairs: DexScreenerPair[] | undefined,
@@ -408,6 +427,16 @@ async function fetchCreatorActivity(
     dexTransferCount: dexTransfers.length,
     dexTransferValueUsd: dexTransfers.reduce((total, transfer) => total + (transfer.quote ?? transfer.delta_quote ?? 0), 0),
     checked: true,
+  };
+}
+
+function buildDeploymentFinding(codeCheck: ContractCodeCheck): AgentFinding {
+  return {
+    label: "Contract deployment",
+    severity: !codeCheck.checked ? "medium" : codeCheck.deployed ? "low" : "critical",
+    detail: codeCheck.detail,
+    raw: JSON.stringify(codeCheck),
+    interpretation: "A token scan must resolve to deployed bytecode on the analyzed network.",
   };
 }
 
@@ -1010,7 +1039,7 @@ function getOnchainScoreBreakdown(findings: AgentFinding[], sources: AgentSource
   const hasCriticalContractBlocker = findings.some((finding) => {
     const label = finding.label.toLowerCase();
 
-    return finding.severity === "critical" && (label.includes("critical contract") || label.includes("transaction simulation"));
+    return finding.severity === "critical" && (label.includes("contract deployment") || label.includes("critical contract") || label.includes("transaction simulation"));
   });
   const hasLowLiquidity = findings.some((finding) => finding.label === "Liquidity" && finding.severity === "high");
   const hasNoLiquidity = findings.some((finding) => finding.label === "Liquidity" && finding.detail.includes("No DexScreener pairs"));
@@ -1038,7 +1067,7 @@ function hasAvoidOverride(findings: AgentFinding[]) {
     const label = finding.label.toLowerCase();
     const detail = finding.detail.toLowerCase();
 
-    return finding.severity === "critical" && (label.includes("critical contract") || label.includes("transaction simulation") || detail.includes("honeypot") || detail.includes("cannot sell"));
+    return finding.severity === "critical" && (label.includes("contract deployment") || label.includes("critical contract") || label.includes("transaction simulation") || detail.includes("honeypot") || detail.includes("cannot sell"));
   });
 }
 
@@ -1095,7 +1124,7 @@ function buildOutputSummaryFindings(scoreBreakdown: OnchainScoreBreakdown, block
 export async function runOnchainAgent(input: OnchainAgentInput, providers: OnchainAgentProviders = {}): Promise<AgentResult> {
   const chain = normalizeChain(input.chain);
   const contractAddress = input.contractAddress?.trim();
-  const chainConfig = chainConfigs[chain];
+  const chainConfig = getScanNetwork(chain);
 
   if (!contractAddress || !isAddress(contractAddress)) {
     return buildAgentResult({
@@ -1135,12 +1164,20 @@ export async function runOnchainAgent(input: OnchainAgentInput, providers: Oncha
     });
   }
 
-  const [securityResult, pairsResult] = await Promise.allSettled([
+  const rpcUrl = getContractRpcUrl(chainConfig);
+  const usesInjectedProviders = Object.keys(providers).length > 0;
+  const [codeResult, securityResult, pairsResult] = await Promise.allSettled([
+    providers.fetchContractCode
+      ? providers.fetchContractCode(rpcUrl ?? "injected", contractAddress)
+      : rpcUrl && !usesInjectedProviders
+        ? fetchContractCode(rpcUrl, contractAddress)
+      : Promise.resolve<ContractCodeCheck>({ checked: false, detail: "RPC bytecode verification is unavailable for this network." }),
     chainConfig.goPlusChainId
       ? (providers.fetchSecurity ?? fetchGoPlusSecurity)(chainConfig.goPlusChainId, contractAddress)
       : Promise.resolve(undefined),
     (providers.fetchPairs ?? fetchDexScreenerPairs)(chainConfig.dexScreenerChainId, contractAddress),
   ]);
+  const codeCheck = codeResult.status === "fulfilled" ? codeResult.value : { checked: false, detail: "RPC bytecode verification failed." };
   const security = securityResult.status === "fulfilled" ? securityResult.value : undefined;
   const pairs = pairsResult.status === "fulfilled" ? pairsResult.value : undefined;
   const creatorActivity = await (providers.fetchCreatorActivity ?? fetchCreatorActivity)(chainConfig, security, contractAddress, pairs).catch(
@@ -1148,6 +1185,7 @@ export async function runOnchainAgent(input: OnchainAgentInput, providers: Oncha
   );
   const simulationSignals = getSimulationSignals(security, pairs);
   const findings = [
+    buildDeploymentFinding(codeCheck),
     ...buildContractAnalysisFindings(security),
     ...buildPrivilegedFunctionFindings(security),
     ...buildSecurityFindings(security),
@@ -1160,6 +1198,13 @@ export async function runOnchainAgent(input: OnchainAgentInput, providers: Oncha
   ];
   const checkedAt = new Date().toISOString();
   const sources: AgentSource[] = [
+    {
+      label: "RPC bytecode",
+      status: codeCheck.checked ? "connected" : "unavailable",
+      detail: codeCheck.detail,
+      checkedAt,
+      reliability: codeCheck.checked ? 0.96 : 0.1,
+    },
     {
       label: "GoPlus token security",
       status: security ? "connected" : "unavailable",
@@ -1219,7 +1264,7 @@ export async function runOnchainAgent(input: OnchainAgentInput, providers: Oncha
     summary: `Checked ${contractAddress} on ${chainConfig.dexScreenerChainId}. Contract score ${scoreBreakdown.contractSecurity}/100, liquidity score ${scoreBreakdown.liquidityExit}/100, holder score ${scoreBreakdown.holderConcentration}/100.`,
     findings: outputFindings,
     sources,
-    confidence: security && pairs ? 0.74 : security || pairs ? 0.52 : 0.3,
+    confidence: codeCheck.checked && security && pairs ? 0.86 : security && pairs ? 0.74 : security || pairs ? 0.52 : 0.3,
     recommendedAction,
     blockingReasons,
     rawSignals: {
@@ -1229,6 +1274,7 @@ export async function runOnchainAgent(input: OnchainAgentInput, providers: Oncha
         dexScreenerChainId: chainConfig.dexScreenerChainId,
         covalentChainId: chainConfig.covalentChainId,
       },
+      contractIdentity: codeCheck,
       security: getSecurityRawSignals(security),
       market: getMarketRawSignals(pairs),
       holders: getHolderRawSignals(security),

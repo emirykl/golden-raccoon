@@ -24,6 +24,7 @@ import { hashSourceSnapshot } from "../src/server/storage";
 import { rateLimitProfiles } from "../src/server/security/rateLimit";
 import { contractAddressSchema, tokenSymbolSchema, walletAddressSchema } from "../src/server/security/inputValidation";
 import { buildRiskReport, validateRiskReport } from "../src/server/scan/riskReport";
+import { buildAnalysisChecks } from "../src/server/scan/tokenScan";
 import { getX402RouteConfig, getX402RuntimeConfig, validateX402RuntimeConfig } from "../src/server/x402/config";
 import { assertFreshX402Payment, hashPaymentHeader } from "../src/server/x402/guards";
 import type { AgentResult, PortfolioSnapshot, TokenHolding } from "../src/server/types";
@@ -120,6 +121,16 @@ async function runOnchainChecks() {
   const honeypotCard = honeypotReport.agentCards.find((card) => card.agent === "onchain");
   assert(honeypotCard?.criticalFactors?.some((factor) => factor.category === "sellability"), "Critical honeypot/cannot-sell override must be exposed at the top of Contract Guard.");
 
+  const nonContract = await runOnchainAgent(baseInput, {
+    fetchContractCode: async () => ({ checked: true, deployed: false, bytecodeSize: 0, detail: "No deployed bytecode." }),
+    fetchSecurity: async () => cleanSecurity(),
+    fetchPairs: async () => [pair()],
+    fetchCreatorActivity: creatorOk,
+  });
+  assert(nonContract.recommendedAction === "avoid", "An EOA or wrong-network address must recommend avoid.");
+  assert(nonContract.riskScore >= 75, "An address without deployed bytecode must produce critical risk.");
+  assert(getRaw<{ deployed?: boolean }>(nonContract, "contractIdentity").deployed === false, "RPC contract identity result must be exposed.");
+
   const lowLiquidity = await runOnchainAgent(baseInput, {
     fetchSecurity: async () => cleanSecurity({ lp_holders: [{ address: "0x5555555555555555555555555555555555555555", percent: "0.10", is_contract: "0", is_locked: "0" }] }),
     fetchPairs: async () => [pair({ liquidity: { usd: 12_000 }, volume: { h24: 8_000 }, fdv: 4_000_000, pairCreatedAt: Date.now() - 1 * 86_400_000 })],
@@ -161,6 +172,64 @@ async function runOnchainChecks() {
   assert(blueChip.recommendedAction === "hold" || blueChip.recommendedAction === "watch", "Blue-chip/high-liquidity fixture must not force manual review.");
   assert(Array.isArray(getRaw<unknown[]>(blueChip, "privilegedFunctions")), "Privileged function detector must be exposed.");
   assert(getRaw<{ excludedCount?: number }>(blueChip, "holderExclusions").excludedCount !== undefined, "Holder exclusion report must be exposed.");
+  const blueChipDecision = runDecisionAgent({ results: [blueChip], context: { mode: "token_scan", establishedAsset: true } });
+  assert(blueChipDecision.recommendedAction !== "avoid", "Clean findings that mention checked blocker names must not create a critical blocker.");
+  assert(blueChipDecision.riskScore < 50, "A clean established-asset scan must stay below high risk.");
+  const emptyWalletPortfolio = agentResult({
+    agent: "portfolio",
+    riskScore: 75,
+    verdict: "Manual review required",
+    summary: "Wallet provider returned no usable holdings.",
+    findings: [{ label: "Stablecoin reserve", severity: "critical", detail: "Verified stablecoin reserve is 0.0% of portfolio value." }],
+    blockingReasons: ["Critical finding: Stablecoin reserve"],
+    recommendedAction: "manual_review",
+  });
+  const connectedWalletDecision = runDecisionAgent({
+    results: [blueChip, emptyWalletPortfolio],
+    context: { mode: "token_scan", establishedAsset: true, userAlreadyOwnsToken: false, holdingAllocationPercent: 0 },
+  });
+  assert(connectedWalletDecision.riskScore === blueChipDecision.riskScore, "Empty wallet context must not change intrinsic token scan risk.");
+  assert(!connectedWalletDecision.blockingReasons.some((reason) => reason.includes("portfolio")), "Portfolio blockers must not override token scan risk.");
+
+  const ownedTokenPortfolio = agentResult({
+    agent: "portfolio",
+    riskScore: 68,
+    verdict: "High target-token exposure",
+    summary: "The scanned token represents 30% of the connected wallet.",
+    findings: [{ label: "Target token exposure", severity: "high", detail: "Target token allocation is 30%." }],
+    recommendedAction: "reduce_exposure",
+  });
+  const ownedTokenDecision = runDecisionAgent({
+    results: [blueChip, ownedTokenPortfolio],
+    context: { mode: "token_scan", establishedAsset: true, userAlreadyOwnsToken: true, holdingAllocationPercent: 30, stableReservePercent: 10 },
+  });
+  const ownedTokenWeights = getRaw<{ details?: Array<{ agent?: string; weight?: number }> }>(ownedTokenDecision, "weightedScore").details ?? [];
+  assert(ownedTokenWeights.some((detail) => detail.agent === "portfolio" && (detail.weight ?? 0) > 0), "Owned-token scans must retain connected portfolio weight.");
+
+  const partialOnchain = agentResult({
+    agent: "onchain",
+    riskScore: 42,
+    verdict: "Partial onchain data",
+    summary: "Some onchain providers were unavailable.",
+    sources: [
+      { label: "RPC bytecode", status: "connected", checkedAt: now.toISOString(), reliability: 0.96 },
+      { label: "GoPlus token security", status: "connected", checkedAt: now.toISOString(), reliability: 0.8 },
+      { label: "DexScreener token pairs", status: "unavailable", checkedAt: now.toISOString(), reliability: 0.1 },
+    ],
+    rawSignals: {
+      contractIdentity: { checked: true, deployed: true, bytecodeSize: 128 },
+      security: { honeypot: undefined, sellTax: "", hiddenOwner: undefined, ownerCanChangeBalance: undefined, mintable: undefined, pausable: undefined },
+      holders: { holderCount: 0, top5Percent: 0 },
+      lp: { lockProvider: { provider: "unavailable", protectedPercent: 0 } },
+      market: { pairCount: 0 },
+      scoreBreakdown: { holderConcentration: 42, liquidityExit: 68, marketAnomaly: 42 },
+    },
+    recommendedAction: "manual_review",
+  });
+  const partialChecks = buildAnalysisChecks(partialOnchain, false);
+  for (const key of ["honeypot", "sell_tax", "ownership", "holders", "liquidity", "lp_lock", "market"]) {
+    assert(partialChecks.find((check) => check.key === key)?.status === "unavailable", `Missing ${key} evidence must remain unavailable.`);
+  }
 
   const dexOnly = await runOnchainAgent(baseInput, {
     fetchSecurity: async () => {

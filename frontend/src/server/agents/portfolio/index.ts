@@ -70,10 +70,11 @@ function findTargetHolding(portfolio: PortfolioSnapshot, target?: PortfolioTarge
     return undefined;
   }
 
-  return portfolio.holdings.find((holding) => {
-    if (contractAddress && holding.tokenAddress.toLowerCase() === contractAddress) return true;
-    return Boolean(symbol && holding.symbol.toUpperCase() === symbol);
-  });
+  if (contractAddress) {
+    return portfolio.holdings.find((holding) => holding.tokenAddress.toLowerCase() === contractAddress);
+  }
+
+  return portfolio.holdings.find((holding) => Boolean(symbol && holding.symbol.toUpperCase() === symbol));
 }
 
 function analyzePortfolioSnapshot(portfolio: PortfolioSnapshot, source: PortfolioSnapshotSource, target?: PortfolioTargetToken): AgentResult {

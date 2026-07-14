@@ -312,9 +312,14 @@ function collectCriticalBlockers(results: AgentResult[], coverage: ReturnType<ty
   }
 
   for (const result of results) {
-    const text = `${result.verdict} ${result.summary} ${result.blockingReasons.join(" ")} ${result.findings.map((finding) => `${finding.label} ${finding.detail}`).join(" ")}`;
+    const criticalEvidence = [
+      ...result.blockingReasons,
+      ...result.findings
+        .filter((finding) => finding.severity === "critical")
+        .map((finding) => `${finding.label} ${finding.detail}`),
+    ].join(" ");
 
-    if (result.agent === "onchain" && includesAny(text, ["honeypot", "cannot sell", "cannot-sell", "critical simulation", "blacklist"])) {
+    if (result.agent === "onchain" && includesAny(criticalEvidence, ["honeypot", "cannot sell", "cannot-sell", "critical simulation", "blacklist", "no deployed bytecode"])) {
       blockers.push({
         label: "Critical onchain blocker",
         severity: "critical",
@@ -324,7 +329,7 @@ function collectCriticalBlockers(results: AgentResult[], coverage: ReturnType<ty
       });
     }
 
-    if (result.agent === "social" && includesAny(text, ["phishing", "drainer", "identity mismatch", "official-looking phishing"])) {
+    if (result.agent === "social" && includesAny(criticalEvidence, ["phishing", "drainer", "identity mismatch", "official-looking phishing"])) {
       blockers.push({
         label: "Critical social identity/link blocker",
         severity: "critical",
@@ -813,7 +818,12 @@ function getDecisionCoreAudit(input: {
 }
 
 export function runDecisionAgent(input: DecisionInput): AgentResult {
-  const { validResults: results, invalidMessages } = getValidSpecialistResults(input.results);
+  const { validResults, invalidMessages } = getValidSpecialistResults(input.results);
+  const initialContext = inferContext(validResults, input.context);
+  const results =
+    initialContext.mode === "token_scan" && !initialContext.userAlreadyOwnsToken
+      ? validResults.filter((result) => result.agent !== "portfolio")
+      : validResults;
   const context = inferContext(results, input.context);
   const coverage = getSourceCoverage(results);
   const weightedScore = getWeightedScore(results, context);

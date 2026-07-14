@@ -427,6 +427,14 @@ export type TokenScanResult = {
   reasons: string[];
   suggestedAction: SuggestedAction;
   riskBreakdown: RiskBreakdownItem[];
+  analysisChecks?: Array<{
+    key: string;
+    label: string;
+    status: "pass" | "warning" | "danger" | "unavailable";
+    score: number | null;
+    value?: string;
+    reason: string;
+  }>;
   riskReport?: RiskReport;
   sources: ScanSource[];
   dataQuality?: SourceDataQuality;

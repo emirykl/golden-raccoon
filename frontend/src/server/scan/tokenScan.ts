@@ -10,6 +10,98 @@ import { buildRiskReport, createRiskReportInput } from "@/server/scan/riskReport
 import { normalizeTokenInput } from "@/server/scan/tokenInput";
 import { isVerifiedEstablishedAsset } from "@/server/portfolio/tokenRegistry";
 
+type ScanCheck = NonNullable<TokenScanResult["analysisChecks"]>[number];
+const unavailableCheckLabels = ["Deployed", "Honeypot", "Sell tax", "Ownership", "Holders", "Liquidity", "LP lock", "Market"];
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function asNumber(value: unknown) {
+  if (typeof value === "string" && value.trim() === "") return undefined;
+
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function hasSignal(value: unknown) {
+  return value !== undefined && value !== null && !(typeof value === "string" && value.trim() === "");
+}
+
+function isTrueFlag(value: unknown) {
+  return value === true || value === 1 || value === "1" || (typeof value === "string" && value.toLowerCase() === "true");
+}
+
+function checkStatus(score: number | null): ScanCheck["status"] {
+  if (score === null) return "unavailable";
+  if (score >= 50) return "danger";
+  if (score >= 25) return "warning";
+  return "pass";
+}
+
+function shortUsd(value?: number) {
+  if (typeof value !== "number") return undefined;
+  if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `$${Math.round(value / 1_000)}K`;
+  return `$${Math.round(value)}`;
+}
+
+export function buildAnalysisChecks(onchainResult: AgentResult, establishedAsset: boolean): ScanCheck[] {
+  const raw = asRecord(onchainResult.rawSignals);
+  const identity = asRecord(raw.contractIdentity);
+  const security = asRecord(raw.security);
+  const holders = asRecord(raw.holders);
+  const lp = asRecord(raw.lp);
+  const lockProvider = asRecord(lp.lockProvider);
+  const market = asRecord(raw.market);
+  const bestPair = asRecord(market.bestPair);
+  const scores = asRecord(raw.scoreBreakdown);
+  const identityChecked = identity.checked === true;
+  const deployed = identity.deployed === true;
+  const honeypotKnown = hasSignal(security.honeypot);
+  const honeypot = isTrueFlag(security.honeypot);
+  const rawSellTax = asNumber(security.sellTax);
+  const sellTax = rawSellTax === undefined ? undefined : rawSellTax * 100;
+  const permissionValues = [security.hiddenOwner, security.ownerCanChangeBalance, security.mintable, security.pausable];
+  const permissionFlags = permissionValues.filter(isTrueFlag).length;
+  const permissionsKnown = permissionValues.every(hasSignal);
+  const holderCount = asNumber(holders.holderCount) ?? 0;
+  const holderScore = holderCount > 0 ? asNumber(scores.holderConcentration) ?? null : null;
+  const dexConnected = onchainResult.sources.some((source) => source.label === "DexScreener token pairs" && source.status === "connected");
+  const liquidityScore = dexConnected ? asNumber(scores.liquidityExit) ?? null : null;
+  const marketScore = dexConnected ? asNumber(scores.marketAnomaly) ?? null : null;
+  const protectedPercent = asNumber(lockProvider.protectedPercent);
+  const boundedProtectedPercent =
+    lockProvider.provider === "unavailable" || protectedPercent === undefined
+      ? undefined
+      : Math.max(0, Math.min(100, protectedPercent));
+  const liquidityUsd = asNumber(bestPair.liquidityUsd);
+  const fdvUsd = asNumber(bestPair.fdvUsd);
+  const fdvLiquidityRatio = liquidityUsd && fdvUsd ? fdvUsd / liquidityUsd : undefined;
+  const top5Percent = holderCount > 0 ? asNumber(holders.top5Percent) : undefined;
+  const permissionLabels = [
+    ["hidden owner", security.hiddenOwner],
+    ["balance control", security.ownerCanChangeBalance],
+    ["mint", security.mintable],
+    ["pause", security.pausable],
+  ].filter(([, value]) => isTrueFlag(value)).map(([label]) => label);
+
+  const checks: Array<Omit<ScanCheck, "status">> = [
+    { key: "deployed", label: "Deployed", score: identityChecked ? (deployed ? 0 : 100) : null, value: identityChecked ? (deployed ? "+" : "x") : "?", reason: identityChecked ? (deployed ? `Bytecode confirmed${asNumber(identity.bytecodeSize) ? ` (${asNumber(identity.bytecodeSize)} bytes)` : ""}.` : "No contract bytecode exists on this network.") : "RPC bytecode check was unavailable." },
+    { key: "honeypot", label: "Honeypot", score: honeypotKnown ? (honeypot ? 100 : 0) : null, value: honeypotKnown ? (honeypot ? "x" : "+") : "?", reason: honeypotKnown ? (honeypot ? "Sell restriction or honeypot flag detected." : "No honeypot or cannot-sell flag detected.") : "Honeypot data was unavailable." },
+    { key: "sell_tax", label: "Sell tax", score: sellTax === undefined ? null : sellTax >= 25 ? 100 : sellTax >= 10 ? 65 : sellTax > 0 ? 30 : 0, value: sellTax === undefined ? "?" : `${sellTax.toFixed(1)}%`, reason: sellTax === undefined ? "Sell tax could not be verified." : `Reported sell tax is ${sellTax.toFixed(1)}%.` },
+    { key: "ownership", label: "Ownership", score: permissionFlags >= 2 ? 85 : permissionFlags === 1 ? 55 : permissionsKnown ? 0 : null, value: permissionFlags > 0 ? `${permissionFlags} flags` : permissionsKnown ? "+" : "?", reason: permissionFlags > 0 ? `${permissionLabels.join(", ")} control detected${establishedAsset && permissionLabels.includes("mint") ? "; bridge assets may require mint/burn control" : ""}.` : permissionsKnown ? "No elevated owner control detected." : "Ownership controls could not be verified." },
+    { key: "holders", label: "Holders", score: holderScore, value: top5Percent === undefined ? undefined : `Top 5 ${top5Percent.toFixed(0)}%`, reason: top5Percent === undefined ? "Holder distribution was unavailable." : `Top 5 non-excluded holders control ${top5Percent.toFixed(1)}%.` },
+    { key: "liquidity", label: "Liquidity", score: liquidityScore, value: dexConnected && liquidityUsd === undefined ? "$0" : shortUsd(liquidityUsd), reason: !dexConnected ? "DEX liquidity was unavailable." : liquidityUsd === undefined ? "No DEX liquidity pool was found." : `Best detected DEX pool holds ${shortUsd(liquidityUsd)} liquidity.` },
+    { key: "lp_lock", label: "LP lock", score: boundedProtectedPercent === undefined ? null : Math.round(100 - boundedProtectedPercent), value: boundedProtectedPercent === undefined ? "?" : `${boundedProtectedPercent.toFixed(0)}%`, reason: boundedProtectedPercent === undefined ? "LP lock data was unavailable." : `${boundedProtectedPercent.toFixed(1)}% of detected LP is locked or burned.` },
+    { key: "market", label: "Market", score: marketScore, value: asNumber(market.pairCount) ? `${asNumber(market.pairCount)} pairs` : undefined, reason: !dexConnected ? "Market data was unavailable." : fdvLiquidityRatio === undefined ? "No usable FDV/liquidity ratio was found." : `FDV is ${fdvLiquidityRatio.toFixed(1)}x detected DEX liquidity.` },
+  ];
+
+  return checks.map((check) => ({ ...check, status: checkStatus(check.score) }));
+}
+
 function riskLevel(score: number): RiskLevel {
   return scoreToRiskLevel(score);
 }
@@ -167,6 +259,14 @@ function buildUnresolvedTokenScan(query: string, chain?: string): TokenScanResul
         finding: "No live contract, liquidity, news or social scan was run because the token input could not be resolved.",
       },
     ],
+    analysisChecks: unavailableCheckLabels.map((label) => ({
+      key: label.toLowerCase().replaceAll(" ", "_"),
+      label,
+      status: "unavailable" as const,
+      score: null,
+      value: "?",
+      reason: "This check could not run because the token input was unresolved.",
+    })),
     sources,
     dataQuality,
     riskReport: {
@@ -245,16 +345,18 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
       }),
     ),
   ]);
-  const specialistResults = walletAddress ? [onchainResult, newsResult, socialResult, portfolioResult] : [onchainResult, newsResult, socialResult];
   const targetExposure = typeof portfolioResult.rawSignals?.targetTokenExposurePercent === "number" ? portfolioResult.rawSignals.targetTokenExposurePercent : 0;
+  const includePortfolioContext = Boolean(walletAddress && targetExposure > 0 && portfolioResult.sources.some((source) => source.status === "connected"));
+  const specialistResults = includePortfolioContext ? [onchainResult, newsResult, socialResult, portfolioResult] : [onchainResult, newsResult, socialResult];
   const stableReserve = portfolioResult.rawSignals?.portfolioRisk as { stableReservePercent?: unknown } | undefined;
+  const establishedAsset = isVerifiedEstablishedAsset(normalized.symbol, normalized.chain, normalized.contractAddress);
   const decisionResult = runDecisionAgent({
     results: specialistResults,
     context: {
       mode: "token_scan",
       walletAddress,
       tokenSymbol: normalized.symbol,
-      establishedAsset: isVerifiedEstablishedAsset(normalized.symbol, normalized.chain, normalized.contractAddress),
+      establishedAsset,
       userAlreadyOwnsToken: Boolean(walletAddress && targetExposure > 0),
       holdingAllocationPercent: targetExposure,
       stableReservePercent: typeof stableReserve?.stableReservePercent === "number" ? stableReserve.stableReservePercent : undefined,
@@ -271,7 +373,13 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
     quoteAvailable: false,
     simulationStatus: overallRiskScore >= 50 ? "pending" : "not_required",
   });
-  const combinedFindings = [...decisionResult.findings, ...onchainResult.findings, ...newsResult.findings, ...socialResult.findings, ...portfolioResult.findings];
+  const combinedFindings = [
+    ...decisionResult.findings,
+    ...onchainResult.findings,
+    ...newsResult.findings,
+    ...socialResult.findings,
+    ...(includePortfolioContext ? portfolioResult.findings : []),
+  ];
   const riskBreakdown = combinedFindings.map(mapFindingToBreakdown);
 
   const sources: TokenScanResult["sources"] = [
@@ -295,11 +403,13 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
       status: source.status,
       detail: source.detail ?? "",
     })),
-    ...portfolioResult.sources.map((source) => ({
-      label: source.label,
-      status: source.status,
-      detail: source.detail ?? "",
-    })),
+    ...(includePortfolioContext
+      ? portfolioResult.sources.map((source) => ({
+          label: source.label,
+          status: source.status,
+          detail: source.detail ?? "",
+        }))
+      : []),
     ...decisionResult.sources.map((source) => ({
       label: source.label,
       status: source.status,
@@ -312,7 +422,7 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
     query,
     requestedChain: chain,
     normalized,
-    results: [onchainResult, newsResult, socialResult, portfolioResult, decisionResult],
+    results: [onchainResult, newsResult, socialResult, ...(includePortfolioContext ? [portfolioResult] : []), decisionResult],
     decision: decisionResult,
     dataQuality,
     executionPreview,
@@ -328,7 +438,7 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
     overallRiskScore,
     opportunityScore: Math.max(0, 100 - overallRiskScore),
     verdict: verdictFromScore(overallRiskScore),
-    summary: `${decisionResult.summary} ${onchainResult.summary} ${newsResult.summary} ${socialResult.summary} ${portfolioResult.summary}`,
+    summary: `${decisionResult.summary} ${onchainResult.summary} ${newsResult.summary} ${socialResult.summary}${includePortfolioContext ? ` ${portfolioResult.summary}` : ""}`,
     reasons: combinedFindings.map((finding) => finding.detail).slice(0, 10),
     suggestedAction: suggestedActionFromDecision(decisionResult),
     riskBreakdown: riskBreakdown.length > 0
@@ -341,7 +451,8 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
             severity: riskLevel(overallRiskScore),
             finding: `${decisionResult.summary} ${onchainResult.summary} ${newsResult.summary} ${socialResult.summary}`,
           },
-    ],
+        ],
+    analysisChecks: buildAnalysisChecks(onchainResult, establishedAsset),
     sources,
     dataQuality,
     riskReport,

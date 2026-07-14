@@ -3,43 +3,32 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useAccount } from "wagmi";
-import { ArrowRight, BrainCircuit, Check, CheckCircle2, ChevronDown, Circle, Loader2, RadioTower, ShieldCheck, Waves, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, BrainCircuit, Check, ChevronDown, CircleHelp, Loader2, Search, X } from "lucide-react";
 import type { AgentResult, PortfolioSnapshot, TokenHolding, TokenScanResult } from "@/server/types";
 import { AgentResultPanel } from "@/components/AgentResultPanel";
 import { NoDataState } from "@/components/NoDataState";
 import { RiskScoreCard } from "@/components/RiskScoreCard";
 import { WalletPortfolioCard } from "@/components/WalletPortfolioCard";
+import { getScanNetwork, normalizeScanNetworkId, scanNetworks } from "@/lib/scanNetworks";
 
-const networks = [
-  { id: "goat", name: "GOAT", mark: "G", color: "bg-[#d9a441] text-black" },
-  { id: "ethereum", name: "Ethereum", mark: "E", color: "bg-[#627eea] text-white" },
-  { id: "linea", name: "Linea", mark: "L", color: "bg-[#61dfff] text-black" },
-  { id: "base", name: "Base", mark: "B", color: "bg-[#0052ff] text-white" },
-  { id: "arbitrum", name: "Arbitrum", mark: "A", color: "bg-[#213147] text-white" },
-  { id: "bnb", name: "BNB Chain", mark: "B", color: "bg-[#f3ba2f] text-black" },
-];
-
-const tokenScanStages = [
-  { label: "Identity", icon: Circle },
-  { label: "Contract", icon: ShieldCheck },
-  { label: "Market", icon: Waves },
-  { label: "Social", icon: RadioTower },
-  { label: "Decision", icon: BrainCircuit },
-];
-
-function normalizeUiChain(value?: string) {
-  const normalized = (value ?? "").toLowerCase();
-
-  if (["bnb", "bnb chain", "bsc-mainnet"].includes(normalized)) return "bsc";
-  if (["eth", "eth-mainnet"].includes(normalized)) return "ethereum";
-
-  return normalized.replace("-mainnet", "");
-}
+const scanCheckLabels = ["Deployed", "Honeypot", "Sell tax", "Ownership", "Holders", "Liquidity", "LP lock", "Market"];
 
 function getNetworkLabel(value?: string) {
-  const normalized = normalizeUiChain(value);
+  return getScanNetwork(value)?.name ?? (value || "Unknown");
+}
 
-  return networks.find((network) => normalizeUiChain(network.id) === normalized)?.name ?? (value || "Unknown");
+function getScanCheckTone(status: NonNullable<TokenScanResult["analysisChecks"]>[number]["status"]) {
+  if (status === "pass") return "border-emerald-300/25 bg-emerald-300/8 text-emerald-200";
+  if (status === "warning") return "border-[#d9a441]/30 bg-[#d9a441]/8 text-[#f2c86d]";
+  if (status === "danger") return "border-red-300/30 bg-red-400/8 text-red-200";
+  return "border-white/10 bg-white/[.035] text-white/38";
+}
+
+function getScanCheckMark(status: NonNullable<TokenScanResult["analysisChecks"]>[number]["status"]) {
+  if (status === "pass") return "+";
+  if (status === "warning") return "!";
+  if (status === "danger") return "x";
+  return "?";
 }
 
 type DashboardAgentKey = "portfolio" | "onchain" | "news" | "social" | "decision";
@@ -135,10 +124,13 @@ export function DashboardClient() {
   const { address } = useAccount();
   const [portfolio, setPortfolio] = useState<PortfolioSnapshot | null>(null);
   const [scanQuery, setScanQuery] = useState("");
-  const [selectedNetwork, setSelectedNetwork] = useState(networks[0]);
+  const [selectedNetwork, setSelectedNetwork] = useState(scanNetworks[0]);
   const [isNetworkOpen, setIsNetworkOpen] = useState(false);
+  const [networkSearch, setNetworkSearch] = useState("");
   const [isScanning, setIsScanning] = useState(false);
   const [scanStageIndex, setScanStageIndex] = useState(0);
+  const [visibleScanChecks, setVisibleScanChecks] = useState(0);
+  const [isScoreReasonOpen, setIsScoreReasonOpen] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanResult, setScanResult] = useState<TokenScanResult | null>(null);
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
@@ -160,17 +152,38 @@ export function DashboardClient() {
     if (!isScanning) return;
 
     const timer = window.setInterval(() => {
-      setScanStageIndex((current) => (current >= tokenScanStages.length - 2 ? current : current + 1));
-    }, 850);
+      setScanStageIndex((current) => (current >= scanCheckLabels.length - 1 ? current : current + 1));
+    }, 700);
 
     return () => window.clearInterval(timer);
   }, [isScanning]);
+
+  useEffect(() => {
+    const checkCount = scanResult?.analysisChecks?.length ?? 0;
+
+    if (checkCount === 0 || visibleScanChecks >= checkCount) return;
+
+    const timer = window.setTimeout(() => setVisibleScanChecks((current) => current + 1), 420);
+
+    return () => window.clearTimeout(timer);
+  }, [scanResult, visibleScanChecks]);
 
   if (!portfolio) {
     return <NoDataState title="Provider unavailable" detail="Portfolio source has not returned a wallet snapshot yet." action="Not enough connected sources. No mock data used." />;
   }
 
   const riskDrivers = getPortfolioRiskDrivers(portfolio);
+  const normalizedNetworkSearch = networkSearch.trim().toLowerCase();
+  const filteredNetworks = normalizedNetworkSearch
+    ? scanNetworks.filter((network) => `${network.name} ${network.id}`.toLowerCase().includes(normalizedNetworkSearch))
+    : scanNetworks;
+  const scanChecks = scanResult?.analysisChecks ?? [];
+  const scanRevealComplete = Boolean(scanResult) && (scanChecks.length === 0 || visibleScanChecks >= scanChecks.length);
+  const scoreReasons = [...scanChecks]
+    .filter((check) => check.score !== null && check.score >= 25)
+    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
+    .slice(0, 4);
+  const cleanChecks = scanChecks.filter((check) => check.score !== null && check.score < 25);
 
   async function runTokenScan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -183,6 +196,8 @@ export function DashboardClient() {
     setScanResult(null);
     setScanError(null);
     setScanStageIndex(0);
+    setVisibleScanChecks(0);
+    setIsScoreReasonOpen(false);
 
     try {
       const response = await fetch("/api/scan/token", {
@@ -195,7 +210,7 @@ export function DashboardClient() {
 
       const data = (await response.json()) as TokenScanResult;
       setScanResult(data);
-      setScanStageIndex(tokenScanStages.length - 1);
+      setScanStageIndex(scanCheckLabels.length - 1);
     } catch (error) {
       setScanError(error instanceof Error ? error.message : "Token scan failed.");
     } finally {
@@ -424,14 +439,28 @@ export function DashboardClient() {
               </button>
 
               {isNetworkOpen ? (
-                <div className="absolute bottom-14 left-0 z-50 max-h-72 w-full overflow-y-auto rounded-[22px] border border-white/10 bg-[#101012] py-2 shadow-2xl sm:w-72">
-                  {networks.map((network) => (
+                <div className="absolute bottom-14 left-0 z-50 flex max-h-96 w-full flex-col overflow-hidden rounded-xl border border-white/10 bg-[#101012] shadow-2xl sm:w-80">
+                  <div className="sticky top-0 z-10 border-b border-white/10 bg-[#101012] p-2">
+                    <div className="flex h-10 items-center gap-2 rounded-lg bg-white/6 px-3">
+                      <Search className="h-4 w-4 shrink-0 text-white/34" />
+                      <input
+                        autoFocus
+                        value={networkSearch}
+                        onChange={(event) => setNetworkSearch(event.target.value)}
+                        placeholder="Find network"
+                        className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-white/28"
+                      />
+                    </div>
+                  </div>
+                  <div className="overflow-y-auto py-1">
+                  {filteredNetworks.map((network) => (
                     <button
                       key={network.id}
                       type="button"
                       onClick={() => {
                         setSelectedNetwork(network);
                         setIsNetworkOpen(false);
+                        setNetworkSearch("");
                       }}
                       className="flex h-12 w-full items-center justify-between px-4 text-left text-sm text-white/78 transition hover:bg-white/7"
                     >
@@ -444,6 +473,8 @@ export function DashboardClient() {
                       {network.id === selectedNetwork.id ? <Check className="h-4 w-4 text-[#d9a441]" /> : null}
                     </button>
                   ))}
+                  {filteredNetworks.length === 0 ? <div className="px-4 py-8 text-center text-sm text-white/34">No network found</div> : null}
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -477,7 +508,7 @@ export function DashboardClient() {
                   <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/52">
                     {scanResult ? getNetworkLabel(scanResult.chain) : selectedNetwork.name}
                   </span>
-                  {scanResult && normalizeUiChain(scanResult.chain) !== normalizeUiChain(selectedNetwork.id) ? (
+                  {scanResult && normalizeScanNetworkId(scanResult.chain) !== normalizeScanNetworkId(selectedNetwork.id) ? (
                     <span className="rounded-full border border-[#d9a441]/30 bg-[#d9a441]/10 px-3 py-1 text-xs text-[#f2c86d]">Network auto-detected</span>
                   ) : null}
                 </div>
@@ -492,44 +523,62 @@ export function DashboardClient() {
               </button>
             </div>
 
-            <div className="mt-7 grid grid-cols-5 gap-1">
-              {tokenScanStages.map((stage, index) => {
-                const StageIcon = stage.icon;
-                const complete = Boolean(scanResult) || index < scanStageIndex;
-                const active = isScanning && index === scanStageIndex;
+            {!scanRevealComplete && !scanError ? (
+              <div className="mt-7 flex flex-col items-center text-center">
+                <div className="relative flex h-20 w-20 items-center justify-center">
+                  <div className="absolute inset-0 animate-ping rounded-full border border-[#d9a441]/20" />
+                  <div className="absolute inset-2 animate-pulse rounded-full border border-[#d9a441]/35" />
+                  <BrainCircuit className="h-8 w-8 text-[#d9a441]" />
+                </div>
+                <div className="mt-3 text-sm font-semibold text-white/74">
+                  {scanResult ? scanChecks[Math.min(visibleScanChecks, scanChecks.length - 1)]?.label : scanCheckLabels[scanStageIndex]}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {scanCheckLabels.map((label, index) => {
+                const result = scanChecks[index];
+                const revealed = Boolean(result && index < visibleScanChecks);
+                const active = scanResult ? Boolean(result && index === visibleScanChecks && !scanRevealComplete) : isScanning && index === scanStageIndex;
+                const processed = !scanResult && index < scanStageIndex;
 
                 return (
-                  <div key={stage.label} className="relative flex min-w-0 flex-col items-center text-center">
-                    {index < tokenScanStages.length - 1 ? <div className={`absolute left-1/2 top-5 h-px w-full ${complete ? "bg-emerald-300/60" : "bg-white/10"}`} /> : null}
-                    <div className={`relative z-10 flex h-10 w-10 items-center justify-center rounded-full border ${complete ? "border-emerald-300/40 bg-emerald-300/12 text-emerald-200" : active ? "border-[#d9a441]/60 bg-[#d9a441]/15 text-[#f2c86d] shadow-[0_0_24px_rgba(217,164,65,.24)]" : "border-white/10 bg-[#111] text-white/28"}`}>
-                      {complete ? <CheckCircle2 className="h-5 w-5" /> : active ? <Loader2 className="h-5 w-5 animate-spin" /> : <StageIcon className="h-4 w-4" />}
+                  <div
+                    key={label}
+                    className={`flex h-20 min-w-0 items-center justify-between gap-2 rounded-lg border px-3 transition-all duration-300 ${revealed ? getScanCheckTone(result.status) : active ? "border-[#d9a441]/45 bg-[#d9a441]/8 text-[#f2c86d] shadow-[0_0_20px_rgba(217,164,65,.12)]" : processed ? "border-white/12 bg-white/[.04] text-white/52" : "border-white/8 bg-black/20 text-white/25"}`}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold">{label}</div>
+                      <div className="mt-1 truncate text-[11px] opacity-65">{revealed ? `${result.value ? `${result.value} · ` : ""}${result.score === null ? "?" : `${result.score}/100`}` : active ? "Checking" : processed ? "Checked" : "Waiting"}</div>
                     </div>
-                    <div className={`mt-2 truncate text-[11px] sm:text-xs ${complete || active ? "text-white/68" : "text-white/28"}`}>{stage.label}</div>
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-current/25 text-sm font-bold">
+                      {active ? <Loader2 className="h-4 w-4 animate-spin" /> : revealed ? getScanCheckMark(result.status) : processed ? <Check className="h-4 w-4" /> : "·"}
+                    </div>
                   </div>
                 );
               })}
             </div>
 
-            {isScanning ? (
-              <div className="mt-8 flex flex-col items-center py-7 text-center">
-                <div className="relative flex h-28 w-28 items-center justify-center">
-                  <div className="absolute inset-0 animate-ping rounded-full border border-[#d9a441]/20" />
-                  <div className="absolute inset-3 animate-pulse rounded-full border border-[#d9a441]/35" />
-                  <BrainCircuit className="h-10 w-10 text-[#d9a441]" />
-                </div>
-                <div className="mt-4 text-lg font-semibold">{tokenScanStages[scanStageIndex]?.label} agent</div>
-                <div className="mt-1 text-sm text-white/42">Checking verified onchain and market sources</div>
-              </div>
-            ) : null}
+            {scanError ? <div className="mt-6 flex items-center gap-3 rounded-lg border border-red-300/20 bg-red-400/8 p-4 text-sm text-red-100"><AlertTriangle className="h-4 w-4 shrink-0" />{scanError}</div> : null}
 
-            {scanError ? <div className="mt-6 rounded-lg border border-red-300/20 bg-red-400/8 p-4 text-sm text-red-100">{scanError}</div> : null}
-
-            {scanResult ? (
+            {scanResult && scanRevealComplete ? (
               <div className="mt-7">
                 <div className={`rounded-xl border p-5 ${scanResult.overallRiskScore >= 75 ? "border-red-300/25 bg-red-400/8" : scanResult.overallRiskScore >= 50 ? "border-orange-300/25 bg-orange-400/8" : scanResult.overallRiskScore >= 25 ? "border-[#d9a441]/25 bg-[#d9a441]/8" : "border-emerald-300/25 bg-emerald-300/8"}`}>
                   <div className="flex items-end justify-between gap-5">
                     <div>
-                      <div className="text-xs text-white/42">Verdict</div>
+                      <div className="flex items-center gap-2 text-xs text-white/42">
+                        Verdict
+                        <button
+                          type="button"
+                          onClick={() => setIsScoreReasonOpen(true)}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-full text-white/45 transition hover:bg-white/8 hover:text-white"
+                          aria-label="Why this score?"
+                          title="Why this score?"
+                        >
+                          <CircleHelp className="h-4 w-4" />
+                        </button>
+                      </div>
                       <div className="mt-1 text-xl font-semibold capitalize">{scanResult.riskReport?.verdict.replaceAll("_", " ") ?? scanResult.verdict.replaceAll("_", " ")}</div>
                     </div>
                     <div className="text-right">
@@ -542,21 +591,49 @@ export function DashboardClient() {
                   </div>
                 </div>
 
-                <div className="mt-5">
-                  <div className="text-sm font-semibold">Key findings</div>
-                  <div className="mt-3 space-y-2">
-                    {(scanResult.riskReport?.topReasons.length ? scanResult.riskReport.topReasons : scanResult.reasons).slice(0, 3).map((reason) => (
-                      <div key={reason} className="flex gap-3 rounded-lg bg-white/[.045] px-4 py-3 text-sm leading-6 text-white/62">
-                        <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#d9a441]" />
-                        <span>{reason}</span>
+              </div>
+            ) : null}
+
+            {isScoreReasonOpen && scanResult && scanRevealComplete ? (
+              <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 px-4 backdrop-blur-sm" onClick={() => setIsScoreReasonOpen(false)}>
+                <div className="max-h-[80vh] w-full max-w-sm overflow-y-auto rounded-xl border border-white/12 bg-[#111113] p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="text-xs text-white/40">Why this score?</div>
+                      <div className="mt-1 text-2xl font-semibold">{scanResult.overallRiskScore}/100</div>
+                    </div>
+                    <button type="button" onClick={() => setIsScoreReasonOpen(false)} className="inline-flex h-8 w-8 items-center justify-center rounded-full text-white/42 transition hover:bg-white/8 hover:text-white" aria-label="Close score details">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  <div className="mt-5 space-y-2">
+                    {scoreReasons.map((check) => (
+                      <div key={check.key} className="border-b border-white/8 pb-3 last:border-0">
+                        <div className="flex items-center justify-between gap-3 text-sm font-semibold">
+                          <span>{check.label}</span>
+                          <span className={check.status === "danger" ? "text-red-200" : "text-[#f2c86d]"}>{check.score}/100</span>
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-white/48">{check.reason}</div>
                       </div>
                     ))}
+                    {scoreReasons.length === 0 ? <div className="text-sm text-white/48">No elevated contract branch was found.</div> : null}
                   </div>
+
+                  {cleanChecks.length > 0 ? (
+                    <div className="mt-4 border-t border-white/10 pt-4">
+                      <div className="flex flex-wrap gap-2">
+                        {cleanChecks.map((check) => (
+                          <span key={check.key} className="rounded-full border border-emerald-300/18 bg-emerald-300/7 px-2.5 py-1 text-[11px] text-emerald-200/75">{check.label} +</span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : null}
 
-            {scanResult?.dataQuality ? (
+            {scanResult?.dataQuality && scanRevealComplete ? (
               <details className="mt-5 border-t border-white/10 pt-4">
                 <summary className="cursor-pointer text-xs text-white/42">
                   Sources · {scanResult.dataQuality.connectedSources} connected · {scanResult.dataQuality.unavailableSources} unavailable

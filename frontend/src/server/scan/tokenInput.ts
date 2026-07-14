@@ -1,4 +1,5 @@
 import { isAddress } from "viem";
+import { normalizeScanNetworkId } from "@/lib/scanNetworks";
 
 export type NormalizedTokenInput = {
   chain: string;
@@ -69,17 +70,6 @@ type DexScreenerPairResponse = {
 };
 
 type DexScreenerPair = NonNullable<DexScreenerPairResponse["pairs"]>[number];
-
-const dexChainAliases: Record<string, string> = {
-  bnb: "bsc",
-  "bnb chain": "bsc",
-  "bsc-mainnet": "bsc",
-  eth: "ethereum",
-  "eth-mainnet": "ethereum",
-  "base-mainnet": "base",
-  "arbitrum-mainnet": "arbitrum",
-  "matic-mainnet": "polygon",
-};
 
 function getPairAgeDays(pairCreatedAt?: number) {
   if (!pairCreatedAt) {
@@ -159,12 +149,6 @@ async function resolveDexScreenerPair(chain: string, pairAddress: string): Promi
   };
 }
 
-function normalizeDexChain(chain?: string) {
-  const normalized = (chain ?? "").trim().toLowerCase();
-
-  return dexChainAliases[normalized] ?? normalized;
-}
-
 function getMatchingToken(pair: DexScreenerPair, contractAddress: string) {
   const normalizedAddress = contractAddress.toLowerCase();
 
@@ -190,8 +174,8 @@ async function resolveContractAddress(contractAddress: string, requestedChain?: 
 
   if (exactMatches.length === 0) return null;
 
-  const normalizedRequestedChain = normalizeDexChain(requestedChain);
-  const requestedChainMatches = exactMatches.filter((pair) => normalizeDexChain(pair.chainId) === normalizedRequestedChain);
+  const normalizedRequestedChain = normalizeScanNetworkId(requestedChain);
+  const requestedChainMatches = exactMatches.filter((pair) => normalizeScanNetworkId(pair.chainId) === normalizedRequestedChain);
   const candidates = requestedChainMatches.length > 0 ? requestedChainMatches : exactMatches;
   const pair = [...candidates].sort((left, right) => pairLiquidity(right) - pairLiquidity(left))[0];
   const token = getMatchingToken(pair, contractAddress);
@@ -202,7 +186,7 @@ async function resolveContractAddress(contractAddress: string, requestedChain?: 
   const telegramUrl = pair.info?.socials?.find((social) => social.type?.toLowerCase() === "telegram")?.url;
 
   return {
-    chain: normalizeDexChain(pair.chainId) || normalizeDexChain(requestedChain) || "base",
+    chain: normalizeScanNetworkId(pair.chainId) || normalizeScanNetworkId(requestedChain) || "base",
     contractAddress,
     pairAddress: pair.pairAddress,
     symbol: token.symbol,
@@ -251,7 +235,7 @@ export async function normalizeTokenInput(query: string, chain?: string): Promis
   if (isAddress(trimmed)) {
     const resolved = await resolveContractAddress(trimmed, chain).catch(() => null);
 
-    return resolved ?? { chain: normalizeDexChain(chain) || "base", contractAddress: trimmed, source: "contract_address" };
+    return resolved ?? { chain: normalizeScanNetworkId(chain) || "base", contractAddress: trimmed, source: "contract_address" };
   }
 
   return null;
