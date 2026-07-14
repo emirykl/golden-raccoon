@@ -9,6 +9,7 @@ import { runSocialAgent } from "@/server/agents/social";
 import { buildRiskReport, createRiskReportInput } from "@/server/scan/riskReport";
 import { normalizeTokenInput } from "@/server/scan/tokenInput";
 import { isVerifiedEstablishedAsset } from "@/server/portfolio/tokenRegistry";
+import { getChainFamily } from "@/lib/chainIdentity";
 
 type ScanCheck = NonNullable<TokenScanResult["analysisChecks"]>[number];
 const unavailableCheckLabels = ["Deployed", "Honeypot", "Sell tax", "Ownership", "Holders", "Liquidity", "LP lock", "Market"];
@@ -100,6 +101,33 @@ export function buildAnalysisChecks(onchainResult: AgentResult, establishedAsset
   ];
 
   return checks.map((check) => ({ ...check, status: checkStatus(check.score) }));
+}
+
+export function buildStellarAnalysisChecks(onchainResult: AgentResult): ScanCheck[] {
+  const labels = [
+    "Asset identity",
+    "Issuer controls",
+    "Clawback capability",
+    "Trustline state",
+    "Liquidity",
+    "Contract interface",
+    "Contract storage",
+    "Data quality",
+  ];
+
+  return labels.map((label) => {
+    const finding = onchainResult.findings.find((candidate) => candidate.label === label);
+    const score = typeof finding?.scoreImpact === "number" ? finding.scoreImpact : null;
+
+    return {
+      key: label.toLowerCase().replaceAll(" ", "_"),
+      label,
+      status: checkStatus(score),
+      score,
+      value: score === null ? "?" : score < 25 ? "+" : score >= 50 ? "!" : "review",
+      reason: finding?.detail ?? "This Stellar check was unavailable.",
+    };
+  });
 }
 
 function riskLevel(score: number): RiskLevel {
@@ -319,6 +347,10 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
       runOnchainAgent({
         chain: normalized.chain,
         contractAddress: normalized.contractAddress,
+        symbol: normalized.symbol,
+        issuer: normalized.issuer,
+        assetKey: normalized.assetKey,
+        assetType: normalized.assetType,
       }),
     ),
     runAgentSafely("news", () =>
@@ -452,7 +484,9 @@ export async function runTokenScan(query: string, chain?: string, walletAddress?
             finding: `${decisionResult.summary} ${onchainResult.summary} ${newsResult.summary} ${socialResult.summary}`,
           },
         ],
-    analysisChecks: buildAnalysisChecks(onchainResult, establishedAsset),
+    analysisChecks: getChainFamily(normalized.chain) === "stellar"
+      ? buildStellarAnalysisChecks(onchainResult)
+      : buildAnalysisChecks(onchainResult, establishedAsset),
     sources,
     dataQuality,
     riskReport,

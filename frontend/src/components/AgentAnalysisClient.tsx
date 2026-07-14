@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useWalletSession } from "@/hooks/useWalletSession";
 import type { AgentAnalysisResult } from "@/server/agent";
 import type { TransactionPreview as Preview } from "@/server/types";
 import { AgentTimeline } from "@/components/AgentTimeline";
@@ -19,7 +19,7 @@ function createDemoWalletTxHash() {
 }
 
 export function AgentAnalysisClient() {
-  const { address } = useAccount();
+  const { address } = useWalletSession();
   const [analysis, setAnalysis] = useState<AgentAnalysisResult | null>(null);
   const [preparedPreview, setPreparedPreview] = useState<Preview | null>(null);
   const [isRunning, setIsRunning] = useState(false);

@@ -183,6 +183,14 @@ export type PortfolioSnapshot = {
   riskScore: number;
   createdAt: string;
   holdings: TokenHolding[];
+  valuationStatus?: "complete" | "partial" | "unavailable";
+  unpricedAssetCount?: number;
+  accountSubentryCount?: number;
+  providerMeta?: {
+    provider: string;
+    network: string;
+    latencyMs: number;
+  };
 };
 
 export type AgentStep = {
@@ -381,7 +389,10 @@ export type RiskReportInput = {
   pairUrl?: string;
   symbol?: string;
   tokenName?: string;
-  source: "contract_address" | "dexscreener_pair_url" | "dexscreener_token_url" | "unresolved";
+  assetKey?: string;
+  assetType?: "native" | "classic" | "contract" | "issuer_account";
+  issuer?: string;
+  source: "contract_address" | "dexscreener_pair_url" | "dexscreener_token_url" | "stellar_asset" | "stellar_issuer" | "unresolved";
 };
 
 export type RiskReport = {

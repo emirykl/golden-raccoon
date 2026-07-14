@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { WagmiProvider } from "wagmi";
 import { wagmiConfig } from "@/lib/wagmi";
+import { StellarWalletProvider } from "@/providers/StellarWalletProvider";
 
 export function Web3Provider({ children }: { children: ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
@@ -21,7 +22,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
             overlayBlur: "small",
           })}
         >
-          {children}
+          <StellarWalletProvider>{children}</StellarWalletProvider>
         </RainbowKitProvider>
       </QueryClientProvider>
     </WagmiProvider>

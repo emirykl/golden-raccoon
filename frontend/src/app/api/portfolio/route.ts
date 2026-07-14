@@ -3,10 +3,15 @@ import { z } from "zod";
 import { withCacheHeaders } from "@/server/cache/strategy";
 import { getPortfolioSnapshot } from "@/server/portfolio/getPortfolio";
 import { checkRateLimit } from "@/server/security/rateLimit";
-import { walletAddressSchema } from "@/server/security/inputValidation";
+import { anyWalletAddressSchema, chainIdSchema, validateWalletAddressForChain } from "@/server/security/inputValidation";
 
 const querySchema = z.object({
-  walletAddress: walletAddressSchema,
+  walletAddress: anyWalletAddressSchema,
+  chain: chainIdSchema,
+}).superRefine((value, context) => {
+  if (!validateWalletAddressForChain(value.walletAddress, value.chain)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["walletAddress"], message: "Wallet address does not match the selected chain" });
+  }
 });
 
 export async function GET(request: NextRequest) {
@@ -18,13 +23,14 @@ export async function GET(request: NextRequest) {
 
   const parsed = querySchema.safeParse({
     walletAddress: request.nextUrl.searchParams.get("walletAddress") ?? undefined,
+    chain: request.nextUrl.searchParams.get("chain") ?? undefined,
   });
 
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { portfolio } = await getPortfolioSnapshot(parsed.data.walletAddress);
+  const { portfolio } = await getPortfolioSnapshot(parsed.data.walletAddress, parsed.data.chain);
 
   return withCacheHeaders(NextResponse.json(portfolio), "portfolio");
 }

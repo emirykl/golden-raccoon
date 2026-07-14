@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { useAccount } from "wagmi";
-import { AlertTriangle, ArrowRight, BrainCircuit, Check, ChevronDown, CircleHelp, Loader2, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, BrainCircuit, Check, ChevronDown, CircleHelp, Loader2, Search, Wallet, X } from "lucide-react";
 import type { AgentResult, PortfolioSnapshot, TokenHolding, TokenScanResult } from "@/server/types";
 import { AgentResultPanel } from "@/components/AgentResultPanel";
 import { NoDataState } from "@/components/NoDataState";
 import { RiskScoreCard } from "@/components/RiskScoreCard";
 import { WalletPortfolioCard } from "@/components/WalletPortfolioCard";
+import { WalletConnectButton } from "@/components/WalletConnectButton";
 import { getScanNetwork, normalizeScanNetworkId, scanNetworks } from "@/lib/scanNetworks";
+import { useWalletSession } from "@/hooks/useWalletSession";
+import { StellarRiskPublishButton } from "@/components/StellarRiskPublishButton";
 
 const scanCheckLabels = ["Deployed", "Honeypot", "Sell tax", "Ownership", "Holders", "Liquidity", "LP lock", "Market"];
 
@@ -59,6 +61,44 @@ const dashboardStepTemplates: Omit<DashboardRunStep, "status">[] = [
 
 function getInitialDashboardSteps(): DashboardRunStep[] {
   return dashboardStepTemplates.map((step) => ({ ...step, status: "idle" }));
+}
+
+function WalletRequiredState() {
+  return (
+    <section className="flex min-h-[430px] items-center justify-center rounded-[24px] border border-[#d9a441]/20 bg-[radial-gradient(circle_at_center,rgba(217,164,65,.10),transparent_62%)] px-6 py-16 text-center">
+      <div className="flex max-w-md flex-col items-center">
+        <div className="relative flex h-28 w-28 items-center justify-center">
+          <div className="absolute inset-0 animate-ping rounded-full border border-[#d9a441]/15" />
+          <div className="absolute inset-3 animate-pulse rounded-full border border-[#d9a441]/30 bg-[#d9a441]/5" />
+          <div className="relative flex h-16 w-16 items-center justify-center rounded-full border border-[#d9a441]/35 bg-black/60 shadow-[0_0_45px_rgba(217,164,65,.18)]">
+            <Wallet className="h-7 w-7 text-[#d9a441]" />
+          </div>
+        </div>
+        <div className="mt-5 text-xs font-semibold uppercase tracking-[0.22em] text-[#d9a441]">Wallet required</div>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">Connect your wallet</h1>
+        <p className="mt-3 text-sm leading-6 text-white/48">Connect your wallet to view your portfolio and run personalized agent analysis.</p>
+        <div className="mt-7">
+          <WalletConnectButton />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PortfolioLoadingState() {
+  return (
+    <section className="flex min-h-[430px] items-center justify-center px-6 py-16 text-center">
+      <div className="flex flex-col items-center">
+        <div className="relative flex h-20 w-20 items-center justify-center">
+          <div className="absolute inset-0 animate-ping rounded-full border border-[#d9a441]/15" />
+          <div className="absolute inset-2 animate-pulse rounded-full border border-[#d9a441]/30" />
+          <Loader2 className="h-7 w-7 animate-spin text-[#d9a441]" />
+        </div>
+        <div className="mt-5 text-lg font-semibold text-white">Loading your portfolio</div>
+        <div className="mt-2 text-sm text-white/42">Reading connected wallet balances and risk signals.</div>
+      </div>
+    </section>
+  );
 }
 
 function isEvmAddress(value?: string) {
@@ -121,8 +161,12 @@ async function postAgentResult(endpoint: string, body: unknown): Promise<AgentRe
 }
 
 export function DashboardClient() {
-  const { address } = useAccount();
-  const [portfolio, setPortfolio] = useState<PortfolioSnapshot | null>(null);
+  const { address, isConnected, isConnecting, family, chain } = useWalletSession();
+  const [portfolioRequest, setPortfolioRequest] = useState<{
+    address: string;
+    status: "ready" | "error";
+    data?: PortfolioSnapshot;
+  } | null>(null);
   const [scanQuery, setScanQuery] = useState("");
   const [selectedNetwork, setSelectedNetwork] = useState(scanNetworks[0]);
   const [isNetworkOpen, setIsNetworkOpen] = useState(false);
@@ -134,25 +178,53 @@ export function DashboardClient() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanResult, setScanResult] = useState<TokenScanResult | null>(null);
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
+  const scanStageIndexRef = useRef(0);
+  const scanInFlightRef = useRef(false);
   const [isDashboardRunOpen, setIsDashboardRunOpen] = useState(false);
   const [isRunningAgents, setIsRunningAgents] = useState(false);
   const [dashboardRunSteps, setDashboardRunSteps] = useState<DashboardRunStep[]>(getInitialDashboardSteps);
   const [dashboardAgentResults, setDashboardAgentResults] = useState<AgentResult[]>([]);
   const [dashboardRunSummary, setDashboardRunSummary] = useState<DashboardRunSummary | null>(null);
+  const normalizedAccountAddress = address?.toLowerCase();
+  const portfolioRequestMatches = Boolean(normalizedAccountAddress && portfolioRequest?.address === normalizedAccountAddress);
+  const portfolio = portfolioRequestMatches && portfolioRequest?.status === "ready" ? portfolioRequest.data ?? null : null;
+  const portfolioFailed = portfolioRequestMatches && portfolioRequest?.status === "error";
 
   useEffect(() => {
-    const query = address ? `?walletAddress=${address}` : "";
+    if (!isConnected || !address) return;
 
-    fetch(`/api/portfolio${query}`)
-      .then((response) => response.json())
-      .then((data: PortfolioSnapshot) => setPortfolio(data));
-  }, [address]);
+    const controller = new AbortController();
+    const requestAddress = address.toLowerCase();
+
+    const params = new URLSearchParams({ walletAddress: address });
+    if (family === "stellar" && chain) params.set("chain", chain);
+
+    fetch(`/api/portfolio?${params.toString()}`, { cache: "no-store", signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Portfolio request failed with ${response.status}`);
+        return response.json() as Promise<PortfolioSnapshot>;
+      })
+      .then((data) => {
+        setPortfolioRequest({ address: requestAddress, status: "ready", data });
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setPortfolioRequest({ address: requestAddress, status: "error" });
+      });
+
+    return () => controller.abort();
+  }, [address, chain, family, isConnected]);
 
   useEffect(() => {
     if (!isScanning) return;
 
     const timer = window.setInterval(() => {
-      setScanStageIndex((current) => (current >= scanCheckLabels.length - 1 ? current : current + 1));
+      setScanStageIndex((current) => {
+        const next = current >= scanCheckLabels.length - 1 ? current : current + 1;
+        scanStageIndexRef.current = next;
+
+        return next;
+      });
     }, 700);
 
     return () => window.clearInterval(timer);
@@ -168,7 +240,15 @@ export function DashboardClient() {
     return () => window.clearTimeout(timer);
   }, [scanResult, visibleScanChecks]);
 
-  if (!portfolio) {
+  if (!isConnected && !isConnecting) {
+    return <WalletRequiredState />;
+  }
+
+  if (isConnecting || isConnected && !portfolio && !portfolioFailed) {
+    return <PortfolioLoadingState />;
+  }
+
+  if (!portfolio || portfolioFailed) {
     return <NoDataState title="Provider unavailable" detail="Portfolio source has not returned a wallet snapshot yet." action="Not enough connected sources. No mock data used." />;
   }
 
@@ -179,6 +259,10 @@ export function DashboardClient() {
     : scanNetworks;
   const scanChecks = scanResult?.analysisChecks ?? [];
   const scanRevealComplete = Boolean(scanResult) && (scanChecks.length === 0 || visibleScanChecks >= scanChecks.length);
+  const scanNetworkMismatch = Boolean(
+    scanResult && normalizeScanNetworkId(scanResult.chain) !== normalizeScanNetworkId(selectedNetwork.id),
+  );
+  const detectedScanNetworkLabel = scanResult ? getNetworkLabel(scanResult.chain) : "";
   const scoreReasons = [...scanChecks]
     .filter((check) => check.score !== null && check.score >= 25)
     .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
@@ -187,10 +271,12 @@ export function DashboardClient() {
 
   async function runTokenScan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!scanQuery.trim()) {
+    if (!scanQuery.trim() || scanInFlightRef.current) {
       return;
     }
 
+    scanInFlightRef.current = true;
+    scanStageIndexRef.current = 0;
     setIsScanModalOpen(true);
     setIsScanning(true);
     setScanResult(null);
@@ -209,11 +295,12 @@ export function DashboardClient() {
       if (!response.ok) throw new Error("Token scan failed.");
 
       const data = (await response.json()) as TokenScanResult;
+      setVisibleScanChecks(scanStageIndexRef.current);
       setScanResult(data);
-      setScanStageIndex(scanCheckLabels.length - 1);
     } catch (error) {
       setScanError(error instanceof Error ? error.message : "Token scan failed.");
     } finally {
+      scanInFlightRef.current = false;
       setIsScanning(false);
     }
   }
@@ -252,7 +339,7 @@ export function DashboardClient() {
 
       setDashboardRunSummary({ riskyToken });
 
-      if (riskyToken && isEvmAddress(riskyToken.tokenAddress)) {
+      if (riskyToken && (isEvmAddress(riskyToken.tokenAddress) || riskyToken.chainName?.toLowerCase().includes("stellar"))) {
         specialistTasks.push(
           (async () => {
             setStep("onchain", "running", riskyToken.symbol);
@@ -274,7 +361,7 @@ export function DashboardClient() {
           })(),
         );
       } else {
-        setStep("onchain", "skipped", "No EVM contract");
+        setStep("onchain", "skipped", "No supported asset identity");
       }
 
       if (riskyToken) {
@@ -523,6 +610,18 @@ export function DashboardClient() {
               </button>
             </div>
 
+            {scanNetworkMismatch ? (
+              <div className="mt-5 flex items-start gap-3 rounded-lg border border-[#d9a441]/30 bg-[#d9a441]/8 p-4 text-[#f2c86d]">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <div className="text-sm font-semibold">Contract network detected: {detectedScanNetworkLabel}</div>
+                  <div className="mt-1 text-xs leading-5 text-white/52">
+                    You selected {selectedNetwork.name}, but this contract was found on {detectedScanNetworkLabel}. The scan automatically used the detected network.
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             {!scanRevealComplete && !scanError ? (
               <div className="mt-7 flex flex-col items-center text-center">
                 <div className="relative flex h-20 w-20 items-center justify-center">
@@ -552,8 +651,17 @@ export function DashboardClient() {
                       <div className="truncate text-xs font-semibold">{label}</div>
                       <div className="mt-1 truncate text-[11px] opacity-65">{revealed ? `${result.value ? `${result.value} · ` : ""}${result.score === null ? "?" : `${result.score}/100`}` : active ? "Checking" : processed ? "Checked" : "Waiting"}</div>
                     </div>
-                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-current/25 text-sm font-bold">
+                    <div
+                      className="group relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-current/25 text-sm font-bold outline-none"
+                      tabIndex={revealed ? 0 : -1}
+                      aria-label={revealed ? `${result.label}: ${result.reason}` : undefined}
+                    >
                       {active ? <Loader2 className="h-4 w-4 animate-spin" /> : revealed ? getScanCheckMark(result.status) : processed ? <Check className="h-4 w-4" /> : "·"}
+                      {revealed ? (
+                        <div role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 hidden w-52 rounded-lg border border-white/12 bg-[#171719] px-3 py-2 text-left text-[11px] font-normal leading-4 text-white/72 shadow-2xl group-hover:block group-focus:block">
+                          {result.reason}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -589,6 +697,14 @@ export function DashboardClient() {
                   <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
                     <div className="h-full rounded-full bg-current" style={{ width: `${scanResult.overallRiskScore}%` }} />
                   </div>
+                  <StellarRiskPublishButton
+                    network={scanResult.chain}
+                    assetKey={scanResult.normalizedInput?.assetKey ?? scanResult.normalizedInput?.contractAddress}
+                    assetLabel={scanResult.symbol}
+                    score={scanResult.overallRiskScore}
+                    verdict={scanResult.riskReport?.verdict ?? scanResult.verdict}
+                    report={scanResult.riskReport ?? scanResult}
+                  />
                 </div>
 
               </div>
@@ -633,20 +749,6 @@ export function DashboardClient() {
               </div>
             ) : null}
 
-            {scanResult?.dataQuality && scanRevealComplete ? (
-              <details className="mt-5 border-t border-white/10 pt-4">
-                <summary className="cursor-pointer text-xs text-white/42">
-                  Sources · {scanResult.dataQuality.connectedSources} connected · {scanResult.dataQuality.unavailableSources} unavailable
-                </summary>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {scanResult.sources.map((source) => (
-                    <span key={source.label} className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/42">
-                      {source.label}: {source.status}
-                    </span>
-                  ))}
-                </div>
-              </details>
-            ) : null}
           </div>
         </div>
       ) : null}

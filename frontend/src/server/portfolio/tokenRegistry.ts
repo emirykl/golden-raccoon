@@ -36,6 +36,12 @@ const establishedLargeCapSymbols = new Set([
 
 const knownTokens: KnownToken[] = [
   {
+    symbol: "XLM",
+    name: "Stellar Lumens",
+    tokenClass: "native",
+    coingeckoId: "stellar",
+  },
+  {
     symbol: "ETH",
     name: "Ethereum",
     tokenClass: "native",
@@ -124,6 +130,18 @@ export function getKnownToken(symbol?: string | null) {
   }
 
   return knownTokens.find((token) => token.symbol === normalizedSymbol);
+}
+
+export function getKnownTokensForChain(chain: string) {
+  const normalizedChain = chain.trim().toLowerCase();
+
+  return knownTokens.flatMap((token) => {
+    const address = token.addresses?.[normalizedChain];
+
+    return address
+      ? [{ symbol: token.symbol, name: token.name, tokenClass: token.tokenClass, coingeckoId: token.coingeckoId, address }]
+      : [];
+  });
 }
 
 export function isKnownToken(symbol?: string | null) {

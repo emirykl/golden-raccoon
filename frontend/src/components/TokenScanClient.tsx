@@ -11,6 +11,7 @@ import type { RiskReportVerdict, ScoreFactor, TokenScanResult, TransactionPrevie
 import { NoDataState } from "@/components/NoDataState";
 import { RiskBreakdownCard } from "@/components/RiskBreakdownCard";
 import { WalletConnectButton } from "@/components/WalletConnectButton";
+import { StellarRiskPublishButton } from "@/components/StellarRiskPublishButton";
 
 const paymentStatusLabels: Record<PaymentStage, { title: string; detail: string }> = {
   idle: {
@@ -501,6 +502,14 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
                 </div>
               </div>
               <p className="mt-5 max-w-2xl text-sm leading-6 opacity-80">{report?.summary ?? scan.summary}</p>
+              <StellarRiskPublishButton
+                network={scan.chain}
+                assetKey={normalizedInput?.assetKey ?? normalizedInput?.contractAddress}
+                assetLabel={scan.symbol}
+                score={report?.buyRisk ?? scan.overallRiskScore}
+                verdict={report?.verdict ?? scan.verdict}
+                report={report ?? scan}
+              />
               {normalizedInput ? (
                 <details className="mt-4 text-xs text-white/58">
                   <summary className="cursor-pointer text-white/42">Token details</summary>
@@ -693,17 +702,6 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
                 ) : null}
               </details>
             ) : null}
-            <details className="glass-panel rounded-lg p-5">
-              <summary className="cursor-pointer text-sm font-semibold text-white/68">Sources</summary>
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                {scan.sources.map((source) => (
-                  <div key={source.label} className="rounded-2xl bg-white/6 p-4">
-                    <div className="text-sm font-medium">{source.label}</div>
-                    <div className="mt-1 text-xs uppercase tracking-[0.16em] text-[#d9a441]">{source.status}</div>
-                  </div>
-                ))}
-              </div>
-            </details>
             {scan.dataQuality?.mode === "unavailable" || scan.dataQuality?.connectedSources === 0 ? (
               <NoDataState
                 title="Not enough connected sources"

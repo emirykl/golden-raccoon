@@ -1,3 +1,5 @@
+import { stellarNetworks, validateStellarNetworkConfig } from "@/lib/stellar/config";
+
 type EnvCheck = {
   key: string;
   configured: boolean;
@@ -22,9 +24,26 @@ const serverEnvKeys = [
   "CDP_API_KEY_SECRET",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
+  "STELLAR_RPC_URL",
+  "STELLAR_RPC_FALLBACK_URLS",
+  "STELLAR_DATA_API_URL",
+  "STELLAR_TESTNET_RPC_URL",
+  "STELLAR_TESTNET_RPC_FALLBACK_URLS",
+  "STELLAR_PUBNET_RPC_URL",
+  "STELLAR_PUBNET_RPC_FALLBACK_URLS",
+  "STELLAR_TESTNET_RISK_REGISTRY_ID",
+  "STELLAR_PUBNET_RISK_REGISTRY_ID",
 ] as const;
 
-const publicEnvKeys = ["NEXT_PUBLIC_GOAT_RPC_URL", "NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID"] as const;
+const publicEnvKeys = [
+  "NEXT_PUBLIC_GOAT_RPC_URL",
+  "NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID",
+  "NEXT_PUBLIC_STELLAR_NETWORK",
+  "NEXT_PUBLIC_STELLAR_TESTNET_RPC_URL",
+  "NEXT_PUBLIC_STELLAR_TESTNET_RPC_FALLBACK_URLS",
+  "NEXT_PUBLIC_STELLAR_PUBNET_RPC_URL",
+  "NEXT_PUBLIC_STELLAR_PUBNET_RPC_FALLBACK_URLS",
+] as const;
 
 function isX402Ready() {
   const baseConfigReady = Boolean(process.env.X402_PAY_TO && process.env.X402_PRICE_USD && process.env.X402_NETWORK && process.env.X402_FACILITATOR_URL);
@@ -37,6 +56,8 @@ export function getEnvHealth() {
   const goPlusReady = Boolean(process.env.GOPLUS_API_KEY || (process.env.GOPLUS_APP_KEY && process.env.GOPLUS_APP_SECRET));
   const portfolioReady = Boolean(process.env.GOAT_RPC_URL || process.env.GOLDRUSH_API_KEY || process.env.COVALENT_API_KEY || process.env.ALCHEMY_API_KEY);
   const x402Ready = isX402Ready();
+  const stellarConfig = Object.values(stellarNetworks).map((network) => ({ network: network.id, ...validateStellarNetworkConfig(network) }));
+  const stellarReady = stellarConfig.every((network) => network.ok);
   const checks: EnvCheck[] = [
     ...serverEnvKeys.map((key) => ({
       key,
@@ -72,7 +93,9 @@ export function getEnvHealth() {
       social: true,
       execution: true,
       x402: x402Ready,
+      stellar: stellarReady,
     },
+    stellarConfig,
     detail:
       configuredLiveSources.length > 0
         ? "At least one live data source is configured. Missing sources must stay transparent in UI."

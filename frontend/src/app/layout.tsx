@@ -22,6 +22,7 @@ export default function RootLayout({
     <html
       lang="en"
       className="h-full antialiased"
+      suppressHydrationWarning
     >
       <body className="min-h-full bg-[#050505] text-white">
         <Web3Provider>{children}</Web3Provider>

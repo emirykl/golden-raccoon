@@ -3,11 +3,16 @@ import { isAddress } from "viem";
 import type { AgentFinding, AgentResult, AgentSource } from "@/server/types";
 import { buildAgentResult } from "@/server/agents/shared";
 import { getScanNetwork, normalizeScanNetworkId } from "@/lib/scanNetworks";
+import { getChainFamily } from "@/lib/chainIdentity";
 import type { ScanNetwork } from "@/lib/scanNetworks";
 
 type OnchainAgentInput = {
   chain?: string;
   contractAddress?: string;
+  symbol?: string;
+  issuer?: string;
+  assetKey?: string;
+  assetType?: "native" | "classic" | "contract" | "issuer_account";
 };
 
 type GoPlusTokenSecurity = Record<string, unknown>;
@@ -1122,6 +1127,19 @@ function buildOutputSummaryFindings(scoreBreakdown: OnchainScoreBreakdown, block
 }
 
 export async function runOnchainAgent(input: OnchainAgentInput, providers: OnchainAgentProviders = {}): Promise<AgentResult> {
+  if (getChainFamily(input.chain) === "stellar") {
+    const { runStellarOnchainAgent } = await import("@/server/agents/onchain/stellar");
+
+    return runStellarOnchainAgent({
+      chain: normalizeChain(input.chain),
+      contractAddress: input.contractAddress,
+      symbol: input.symbol,
+      issuer: input.issuer,
+      assetKey: input.assetKey,
+      assetType: input.assetType,
+    });
+  }
+
   const chain = normalizeChain(input.chain);
   const contractAddress = input.contractAddress?.trim();
   const chainConfig = getScanNetwork(chain);
@@ -1175,7 +1193,7 @@ export async function runOnchainAgent(input: OnchainAgentInput, providers: Oncha
     chainConfig.goPlusChainId
       ? (providers.fetchSecurity ?? fetchGoPlusSecurity)(chainConfig.goPlusChainId, contractAddress)
       : Promise.resolve(undefined),
-    (providers.fetchPairs ?? fetchDexScreenerPairs)(chainConfig.dexScreenerChainId, contractAddress),
+    (providers.fetchPairs ?? fetchDexScreenerPairs)(chainConfig.dexScreenerChainId ?? chainConfig.id, contractAddress),
   ]);
   const codeCheck = codeResult.status === "fulfilled" ? codeResult.value : { checked: false, detail: "RPC bytecode verification failed." };
   const security = securityResult.status === "fulfilled" ? securityResult.value : undefined;
@@ -1261,7 +1279,7 @@ export async function runOnchainAgent(input: OnchainAgentInput, providers: Oncha
     agent: "onchain",
     score,
     verdict: score >= 75 ? "Critical onchain risk" : score >= 50 ? "High onchain risk" : score >= 25 ? "Onchain review needed" : "No major onchain flags",
-    summary: `Checked ${contractAddress} on ${chainConfig.dexScreenerChainId}. Contract score ${scoreBreakdown.contractSecurity}/100, liquidity score ${scoreBreakdown.liquidityExit}/100, holder score ${scoreBreakdown.holderConcentration}/100.`,
+    summary: `Checked ${contractAddress} on ${chainConfig.dexScreenerChainId ?? chainConfig.id}. Contract score ${scoreBreakdown.contractSecurity}/100, liquidity score ${scoreBreakdown.liquidityExit}/100, holder score ${scoreBreakdown.holderConcentration}/100.`,
     findings: outputFindings,
     sources,
     confidence: codeCheck.checked && security && pairs ? 0.86 : security && pairs ? 0.74 : security || pairs ? 0.52 : 0.3,

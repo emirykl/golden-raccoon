@@ -1,7 +1,9 @@
-import { createPublicClient, formatUnits, http, isAddress, type Address } from "viem";
+import { createPublicClient, encodeFunctionData, erc20Abi, formatUnits, http, isAddress, type Address } from "viem";
 import { goatNetwork } from "@/lib/chains";
+import { getScanNetwork } from "@/lib/scanNetworks";
 import type { PortfolioSnapshot, TokenHolding, TokenSignal } from "../types";
 import { getRiskLevel, scorePortfolioRisk, scoreTokenRisk } from "./riskScoring";
+import { getKnownTokensForChain } from "./tokenRegistry";
 
 type AlchemyTokenBalance = {
   contractAddress: string;
@@ -72,6 +74,7 @@ const knownTokenCoinGeckoIds: Record<string, string> = {
   BTC: "bitcoin",
   WBTC: "wrapped-bitcoin",
   BNB: "binancecoin",
+  POL: "polygon-ecosystem-token",
   SOL: "solana",
 };
 
@@ -163,6 +166,15 @@ const supportedAlchemyNetworks = {
 
 type SupportedAlchemyNetwork = keyof typeof supportedAlchemyNetworks;
 
+const publicRpcPortfolioNetworks = [
+  { id: "ethereum", nativeSymbol: "ETH", nativeName: "Ethereum" },
+  { id: "base", nativeSymbol: "ETH", nativeName: "Ethereum" },
+  { id: "arbitrum", nativeSymbol: "ETH", nativeName: "Ethereum" },
+  { id: "optimism", nativeSymbol: "ETH", nativeName: "Ethereum" },
+  { id: "polygon", nativeSymbol: "POL", nativeName: "Polygon Ecosystem Token" },
+  { id: "bsc", nativeSymbol: "BNB", nativeName: "BNB" },
+] as const;
+
 function getDefaultSignals(allocationPercent: number, dayChangePercent = 0): TokenSignal {
   const volatility = Math.min(100, Math.round(Math.abs(dayChangePercent) * 3));
 
@@ -191,6 +203,14 @@ function withRisk(holding: Omit<TokenHolding, "riskScore" | "riskLevel">): Token
 
 function normalizeHexBalance(balance: string, decimals: number) {
   return Number(formatUnits(BigInt(balance), decimals));
+}
+
+function hasPositiveRawBalance(balance?: string | null) {
+  try {
+    return BigInt(balance || "0") > BigInt(0);
+  } catch {
+    return false;
+  }
 }
 
 function getPreviousValueFromPercent(valueUsd: number, dayChangePercent?: number | null) {
@@ -224,6 +244,7 @@ async function fetchJsonRpc<T>(url: string, method: string, params: unknown[]): 
       params,
     }),
     next: { revalidate: 30 },
+    signal: AbortSignal.timeout(12_000),
   });
 
   if (!response.ok) {
@@ -441,6 +462,90 @@ async function getAlchemyPortfolioHoldings(walletAddress: Address) {
   return [nativeHolding, ...tokenHoldings];
 }
 
+async function getPublicRpcPortfolioHoldings(walletAddress: Address) {
+  const networkResults = await Promise.allSettled(
+    publicRpcPortfolioNetworks.map(async (networkConfig): Promise<RawTokenHolding[]> => {
+      const network = getScanNetwork(networkConfig.id);
+
+      if (!network?.rpcUrl) return [];
+
+      const [nativeResult, tokenResults] = await Promise.all([
+        fetchJsonRpc<string>(network.rpcUrl, "eth_getBalance", [walletAddress, "latest"]),
+        Promise.allSettled(
+          getKnownTokensForChain(network.id).map(async (token): Promise<RawTokenHolding | null> => {
+            const [balanceHex, decimalsHex] = await Promise.all([
+              fetchJsonRpc<string>(network.rpcUrl!, "eth_call", [
+                {
+                  to: token.address,
+                  data: encodeFunctionData({ abi: erc20Abi, functionName: "balanceOf", args: [walletAddress] }),
+                },
+                "latest",
+              ]),
+              fetchJsonRpc<string>(network.rpcUrl!, "eth_call", [
+                {
+                  to: token.address,
+                  data: encodeFunctionData({ abi: erc20Abi, functionName: "decimals" }),
+                },
+                "latest",
+              ]),
+            ]);
+            const rawBalance = BigInt(balanceHex || "0x0");
+
+            if (rawBalance <= BigInt(0)) return null;
+
+            const decimals = Number(BigInt(decimalsHex || "0x12"));
+            const balance = Number(formatUnits(rawBalance, decimals));
+            const isStablecoin = token.tokenClass === "stablecoin";
+
+            return {
+              tokenAddress: token.address,
+              symbol: token.symbol,
+              name: token.name,
+              chainId: network.id,
+              chainName: network.name,
+              chainLogoUrl: getKnownChainLogoUrl(network.id, network.name),
+              logoUrl: getKnownTokenLogoUrl(token.symbol),
+              isVerified: true,
+              balance,
+              priceUsd: isStablecoin ? 1 : 0,
+              valueUsd: isStablecoin ? balance : 0,
+              allocationPercent: 0,
+              signals: getDefaultSignals(0),
+            };
+          }),
+        ),
+      ]);
+      const holdings = tokenResults.flatMap((result) => result.status === "fulfilled" && result.value ? [result.value] : []);
+      const rawNativeBalance = BigInt(nativeResult || "0x0");
+
+      if (rawNativeBalance > BigInt(0)) {
+        const balance = Number(formatUnits(rawNativeBalance, 18));
+
+        holdings.unshift({
+          tokenAddress: `native:${network.id}`,
+          symbol: networkConfig.nativeSymbol,
+          name: networkConfig.nativeName,
+          chainId: network.id,
+          chainName: network.name,
+          chainLogoUrl: getKnownChainLogoUrl(network.id, network.name),
+          logoUrl: getKnownTokenLogoUrl(networkConfig.nativeSymbol),
+          isVerified: true,
+          balance,
+          priceUsd: 0,
+          valueUsd: 0,
+          allocationPercent: 0,
+          signals: getDefaultSignals(0),
+        });
+      }
+
+      return holdings;
+    }),
+  );
+  const holdings = networkResults.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+
+  return enrichKnownMarketData(holdings).catch(() => holdings);
+}
+
 async function getGoldRushPortfolioHoldings(walletAddress: Address) {
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY;
 
@@ -453,7 +558,7 @@ async function getGoldRushPortfolioHoldings(walletAddress: Address) {
     .map((chain) => chain.trim())
     .filter(Boolean);
   const chainNames = Object.fromEntries(goldRushChains.map((chain) => [chain.id, chain.name]));
-  const chainHoldings = await Promise.all(
+  const chainResults = await Promise.allSettled(
     selectedChains.map(async (chainId) => {
       const url = new URL(`https://api.covalenthq.com/v1/${chainId}/address/${walletAddress}/balances_v2/`);
       url.searchParams.set("no-spam", "true");
@@ -464,6 +569,7 @@ async function getGoldRushPortfolioHoldings(walletAddress: Address) {
           Authorization: `Bearer ${apiKey}`,
         },
         next: { revalidate: 60 },
+        signal: AbortSignal.timeout(12_000),
       });
 
       if (!response.ok) {
@@ -474,7 +580,7 @@ async function getGoldRushPortfolioHoldings(walletAddress: Address) {
       const chainName = chainNames[chainId] ?? payload.data?.chain_name ?? chainId;
 
       return (payload.data?.items ?? [])
-        .filter((item) => BigInt(item.balance || "0") > BigInt(0))
+        .filter((item) => hasPositiveRawBalance(item.balance))
         .map((item): RawTokenHolding => {
           const decimals = item.contract_decimals ?? 18;
           const balance = Number(formatUnits(BigInt(item.balance), decimals));
@@ -513,11 +619,12 @@ async function getGoldRushPortfolioHoldings(walletAddress: Address) {
             allocationPercent: 0,
             signals: getDefaultSignals(0, dayChangePercent),
           };
-        });
+      });
     }),
   );
+  const chainHoldings = chainResults.flatMap((result) => result.status === "fulfilled" ? result.value : []);
 
-  return enrichKnownMarketData(chainHoldings.flat());
+  return enrichKnownMarketData(chainHoldings).catch(() => chainHoldings);
 }
 
 function finalizePortfolio(walletAddress: string, rawHoldings: RawTokenHolding[]): PortfolioSnapshot {
@@ -575,6 +682,12 @@ export async function getRealPortfolio(walletAddress: string): Promise<Portfolio
 
   if (holdings.length > 0) {
     return finalizePortfolio(walletAddress, holdings);
+  }
+
+  const publicRpcHoldings = await getPublicRpcPortfolioHoldings(address).catch(() => []);
+
+  if (publicRpcHoldings.length > 0) {
+    return finalizePortfolio(walletAddress, publicRpcHoldings);
   }
 
   const goatNativeHolding = await getGoatNativeHolding(address).catch(() => null);

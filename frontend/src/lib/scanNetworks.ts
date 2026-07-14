@@ -3,14 +3,33 @@ export type ScanNetwork = {
   name: string;
   mark: string;
   color: string;
+  chainFamily?: "evm" | "stellar";
   aliases?: string[];
   goPlusChainId?: string;
-  dexScreenerChainId: string;
+  dexScreenerChainId?: string;
   covalentChainId?: string;
   rpcUrl?: string;
 };
 
 export const scanNetworks: ScanNetwork[] = [
+  {
+    id: "stellar-testnet",
+    name: "Stellar Testnet",
+    mark: "S",
+    color: "bg-[#7b61ff] text-white",
+    chainFamily: "stellar",
+    aliases: ["stellar", "stellar:testnet", "testnet"],
+    rpcUrl: process.env.NEXT_PUBLIC_STELLAR_TESTNET_RPC_URL ?? "https://soroban-testnet.stellar.org",
+  },
+  {
+    id: "stellar-pubnet",
+    name: "Stellar Pubnet",
+    mark: "S",
+    color: "bg-white text-black",
+    chainFamily: "stellar",
+    aliases: ["stellar-mainnet", "stellar:pubnet", "pubnet"],
+    rpcUrl: process.env.NEXT_PUBLIC_STELLAR_PUBNET_RPC_URL ?? "https://mainnet.sorobanrpc.com",
+  },
   { id: "goat", name: "GOAT", mark: "G", color: "bg-[#d9a441] text-black", aliases: ["goat-mainnet"], dexScreenerChainId: "goat" },
   { id: "ethereum", name: "Ethereum", mark: "E", color: "bg-[#627eea] text-white", aliases: ["eth", "eth-mainnet"], goPlusChainId: "1", dexScreenerChainId: "ethereum", covalentChainId: "eth-mainnet", rpcUrl: "https://ethereum-rpc.publicnode.com" },
   { id: "base", name: "Base", mark: "B", color: "bg-[#0052ff] text-white", aliases: ["base-mainnet"], goPlusChainId: "8453", dexScreenerChainId: "base", covalentChainId: "base-mainnet", rpcUrl: "https://mainnet.base.org" },

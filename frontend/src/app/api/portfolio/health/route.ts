@@ -15,7 +15,7 @@ export async function GET() {
     security: getSecurityHealth(),
     cache: apiCacheStrategy,
     mockFallbacksEnabled: false,
-    fallbackOrder: ["GoldRush/Covalent", "Alchemy", "GOAT RPC", "Unavailable empty portfolio"],
+    fallbackOrder: ["Stellar RPC + data API", "GoldRush/Covalent", "Alchemy", "Public EVM RPC", "GOAT RPC", "Unavailable empty portfolio"],
     checkedAt: new Date().toISOString(),
   });
 }

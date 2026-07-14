@@ -20,6 +20,10 @@ backend/contracts/cache/
 !frontend/src/server/cache/**
 typechain-types/
 
+# Rust / Soroban build outputs
+soroban/target/
+**/target/
+
 # env and secrets
 .env
 .env.*

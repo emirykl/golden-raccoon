@@ -80,7 +80,10 @@ export const riskReportSchema = z.object({
     pairUrl: z.string().optional(),
     symbol: z.string().optional(),
     tokenName: z.string().optional(),
-    source: z.enum(["contract_address", "dexscreener_pair_url", "dexscreener_token_url", "unresolved"]),
+    assetKey: z.string().optional(),
+    assetType: z.enum(["native", "classic", "contract", "issuer_account"]).optional(),
+    issuer: z.string().optional(),
+    source: z.enum(["contract_address", "dexscreener_pair_url", "dexscreener_token_url", "stellar_asset", "stellar_issuer", "unresolved"]),
   }),
   agentCards: z.array(
     z.object({
@@ -146,6 +149,9 @@ export function createRiskReportInput(query: string, chain: string | undefined, 
     pairUrl: normalized.market?.pairUrl,
     symbol: normalized.symbol,
     tokenName: normalized.name,
+    assetKey: normalized.assetKey,
+    assetType: normalized.assetType,
+    issuer: normalized.issuer,
     source: normalized.source,
   };
 }
