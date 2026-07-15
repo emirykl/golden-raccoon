@@ -66,7 +66,7 @@ export default function HistoryPage() {
                 ) : (
                   <tr>
                     <td colSpan={6} className="py-8 text-center text-white/42">
-                      No saved agent runs yet. Run agents from the dashboard to create the first record.
+                      No saved agent runs yet. Run portfolio agents from the dashboard to create the first record.
                     </td>
                   </tr>
                 )}

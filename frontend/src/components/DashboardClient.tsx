@@ -497,7 +497,7 @@ export function DashboardClient() {
               disabled={isRunningAgents}
               className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#d9a441] px-5 text-sm font-semibold text-black transition hover:bg-[#f2c86d] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isRunningAgents ? "Running" : "Run agents"}
+              {isRunningAgents ? "Running portfolio agents" : "Run portfolio agents"}
               {isRunningAgents ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
             </button>
           </div>
@@ -577,7 +577,7 @@ export function DashboardClient() {
               disabled={isScanning || !scanQuery.trim()}
               className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[#d9a441] px-5 text-sm font-semibold text-black transition hover:bg-[#f2c86d]"
             >
-              {isScanning ? "Scanning" : "Scan token"}
+              {isScanning ? "Running token agents" : "Run token agents"}
               <ArrowRight className="h-4 w-4" />
             </button>
           </form>

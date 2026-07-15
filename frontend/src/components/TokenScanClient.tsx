@@ -392,7 +392,7 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
               disabled={isBusy}
               className="h-12 rounded-full bg-[#d9a441] px-6 text-sm font-semibold text-black transition hover:bg-[#f2c86d] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isScanning && !isPaymentWorking ? "Scanning..." : "Free Trial"}
+              {isScanning && !isPaymentWorking ? "Running token agents..." : "Run token agents"}
             </button>
             <button
               type="button"
@@ -400,7 +400,7 @@ export function TokenScanClient({ initialQuery = "MEME" }: { initialQuery?: stri
               disabled={isBusy}
               className="h-12 rounded-full border border-[#d9a441]/45 px-6 text-sm font-semibold text-[#f2c86d] transition hover:border-[#d9a441] hover:bg-[#d9a441]/10 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isPaymentWorking ? "Processing..." : "Detailed Scan"}
+              {isPaymentWorking ? "Processing..." : "Run deep scan agents"}
             </button>
           </div>
           <input
